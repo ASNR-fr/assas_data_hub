@@ -14,7 +14,7 @@ import io
 import base64
 
 from dash import html, dcc, callback, Input, Output, State, dash_table, ctx
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import List, Dict, Any, Optional, Tuple, Union
 from werkzeug.security import generate_password_hash
 
@@ -47,7 +47,7 @@ def get_user_stats() -> Dict[str, Any]:
         user_manager = UserManager()
         all_users = user_manager.get_all_users()
 
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
 
         stats = {
             "total_users": len(all_users),
@@ -59,7 +59,7 @@ def get_user_stats() -> Dict[str, Any]:
             "admin_users": 0,
             "researcher_users": 0,
             "curator_users": 0,
-            "viewer_users": 0,
+            "visitor_users": 0,
             "recent_logins_24h": 0,
             "recent_logins_7d": 0,
             "recent_logins_30d": 0,
