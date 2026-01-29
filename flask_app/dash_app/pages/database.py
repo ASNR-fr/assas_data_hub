@@ -32,6 +32,8 @@ from zipfile import ZipFile
 from uuid import uuid4
 from pathlib import Path
 from typing import List, Tuple
+
+from flask_app import get_mongo_client
 from ...utils.url_utils import get_base_url
 from assasdb import AssasDatabaseManager, AssasDatabaseHandler
 
@@ -79,7 +81,7 @@ def update_table_data() -> pd.DataFrame:
 
     database_manager = AssasDatabaseManager(
         database_handler=AssasDatabaseHandler(
-            client=MongoClient(app.config["CONNECTIONSTRING"]),
+            client=get_mongo_client(app.config["CONNECTIONSTRING_ATLAS"]),
             backup_directory=app.config["BACKUP_DIRECTORY"],
             database_name=app.config["MONGO_DB_NAME"],
         )

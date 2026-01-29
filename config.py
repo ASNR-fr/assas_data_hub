@@ -25,6 +25,8 @@ class Config(object):
     )
 
     CONNECTIONSTRING = os.getenv("CONNECTIONSTRING", r"mongodb://localhost:27017/")
+    CONNECTIONSTRING_ATLAS = os.getenv("CONNECTIONSTRING_ATLAS", "")
+
     MONGO_DB_NAME = os.getenv("MONGO_DB_NAME", r"assas")
     USER_COLLECTION_NAME = os.getenv("USER_COLLECTION_NAME", r"users")
 
