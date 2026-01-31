@@ -4,16 +4,21 @@ This page provides an introduction to the ASSAS Data Hub, including a brief
 description of its purpose, features, and navigation to key sections.
 """
 
+import logging
 import dash
 
 from dash import html, dcc
-from pymongo import MongoClient
+from pandas import DataFrame
 from flask import current_app as app
+
+from flask_app import get_mongo_client
 
 from ..components import content_style, encode_svg_image
 from ...utils.url_utils import get_base_url
 from ...database.user_manager import UserManager
 from assasdb import AssasDatabaseManager, AssasDatabaseHandler
+
+logger = logging.getLogger("assas_app")
 
 dash.register_page(__name__, path="/home")
 
@@ -147,82 +152,103 @@ def get_user_count() -> int:
     return len(all_users)
 
 
-def get_dataset_count(database_manager: AssasDatabaseManager) -> int:
-    """Fetch the total number of datasets available.
-
-    Returns:
-        int: Total dataset count.
-
-    """
-    table_data_local = database_manager.get_all_database_entries()
-    return len(table_data_local)
+_HOME_PROJECTION_EXCLUDE = {
+    "system_user_info": 0,
+    "upload_info": 0,
+    "system_imported_from": 0,
+    "meta_description": 0,
+}
 
 
-def get_storage_size_binary(database_manager: AssasDatabaseManager) -> str:
-    """Fetch the total storage size for binary datasets.
+def get_storage_size_binary(dataframe: DataFrame) -> str:
+    """Calculate total binary storage size from the dataframe."""
+    if (
+        dataframe is None
+        or dataframe.empty
+        or "system_size_binary" not in dataframe.columns
+    ):
+        return "0 B"
 
-    Returns:
-        str: Storage size in human-readable format.
-
-    """
-    size = database_manager.get_overall_database_size()
-
-    if size is None or len(size) == 0:
-        size = "0 B"
-
-    return size
+    size = (
+        dataframe["system_size_binary"]
+        .apply(AssasDatabaseManager.convert_to_bytes)
+        .sum()
+    )
+    size = AssasDatabaseManager.convert_from_bytes(size)
+    return size or "0 B"
 
 
-def get_storage_size_hdf5(database_manager: AssasDatabaseManager) -> str:
-    """Fetch the total storage size for HDF5 datasets.
+def get_storage_size_hdf5(dataframe: DataFrame) -> str:
+    """Calculate total HDF5 storage size from the dataframe."""
+    if (
+        dataframe is None
+        or dataframe.empty
+        or "system_size_hdf5" not in dataframe.columns
+    ):
+        return "0 B"
 
-    Returns:
-        str: Storage size in human-readable format.
-
-    """
-    dataframes = database_manager.get_all_database_entries()
-    dataframes = dataframes.copy()
+    dataframes = dataframe.copy()
     dataframes["system_size_hdf5_bytes"] = dataframes["system_size_hdf5"].apply(
         AssasDatabaseManager.convert_to_bytes
     )
-
     total_size_bytes = dataframes["system_size_hdf5_bytes"].sum()
     total_size = AssasDatabaseManager.convert_from_bytes(total_size_bytes)
+    return total_size or "0 B"
 
-    return total_size
 
+def get_avg_astec_vars_per_dataset(dataframe: DataFrame) -> int:
+    """Calculate average number of ASTEC variables per dataset."""
+    if (
+        dataframe is None
+        or dataframe.empty
+        or "meta_data_variables" not in dataframe.columns
+    ):
+        return 0
 
-def get_avg_astec_vars_per_dataset(database_manager: AssasDatabaseManager) -> int:
-    """Fetch the average number of ASTEC variables per dataset.
-
-    Returns:
-        int: Average number of variables.
-
-    """
-    dataframes = database_manager.get_all_database_entries()
-    dataframes = dataframes.copy()
+    dataframes = dataframe.copy()
     dataframes["num_astec_variables"] = dataframes["meta_data_variables"].apply(
         lambda x: len(x) if isinstance(x, list) else 0
     )
-    return int(dataframes["num_astec_variables"].mean())
+    mean_val = dataframes["num_astec_variables"].mean()
+    return int(mean_val) if mean_val == mean_val else 0  # NaN-safe
 
 
 def layout() -> html.Div:
     """Layout for the Home page."""
-    database_manager = AssasDatabaseManager(
-        database_handler=AssasDatabaseHandler(
-            client=MongoClient(app.config["CONNECTIONSTRING"]),
-            backup_directory=app.config["BACKUP_DIRECTORY"],
-            database_name=app.config["MONGO_DB_NAME"],
-        )
-    )
     base_url = get_base_url()
-    # Query actual statistics
+
+    try:
+        database_manager = AssasDatabaseManager(
+            database_handler=AssasDatabaseHandler(
+                client=get_mongo_client(app.config["CONNECTIONSTRING"]),
+                backup_directory=app.config["BACKUP_DIRECTORY"],
+                database_name=app.config["MONGO_DB_NAME"],
+            )
+        )
+
+        # For home stats you likely want ALL docs,
+        # but keep config-driven limit if needed.
+        limit = int(app.config.get("HOME_STATS_LIMIT", 10))
+        batch_size = int(app.config.get("DATABASE_TABLE_BATCH_SIZE", 500))
+        max_time_ms = int(app.config.get("DATABASE_TABLE_MAX_TIME_MS", 12000))
+
+        dataframe = database_manager.get_all_database_entries_safe(
+            projection=_HOME_PROJECTION_EXCLUDE,
+            limit=limit,
+            batch_size=batch_size,
+            max_time_ms=max_time_ms,
+        )
+    except Exception:
+        logger.exception(
+            "Home page failed to query MongoDB; rendering with empty stats."
+        )
+        dataframe = DataFrame()
+
     user_count = get_user_count()
-    dataset_count = get_dataset_count(database_manager)
-    storage_binary = get_storage_size_binary(database_manager)
-    storage_hdf5 = get_storage_size_hdf5(database_manager)
-    avg_astec_vars = get_avg_astec_vars_per_dataset(database_manager)
+    dataset_count = len(dataframe)
+    storage_binary = get_storage_size_binary(dataframe)
+    storage_hdf5 = get_storage_size_hdf5(dataframe)
+    avg_astec_vars = get_avg_astec_vars_per_dataset(dataframe)
 
     return html.Div(
         [

@@ -7,11 +7,17 @@ import dash
 import dash_bootstrap_components as dbc
 import logging
 from bson import ObjectId
+from datetime import date, datetime
+from uuid import UUID
+
 
 from flask import current_app as app
 from dash import html, Input, Output, State, callback, dcc
 
 from assasdb import AssasDatabaseManager, AssasDatabaseHandler
+from pymongo import MongoClient
+
+from flask_app import get_mongo_client
 from ..components import content_style
 from ...utils.url_utils import get_base_url
 from ...auth_utils import get_current_user
@@ -21,27 +27,49 @@ logger = logging.getLogger("assas_app")
 dash.register_page(__name__, path_template="/details/<report_id>")
 
 
+def _to_json_safe(value: object) -> object:
+    """Recursively convert values to JSON-serializable primitives."""
+    if value is None:
+        return None
+
+    if isinstance(value, ObjectId):
+        return str(value)
+
+    if isinstance(value, (datetime, date)):
+        return value.isoformat()
+
+    if isinstance(value, UUID):
+        return str(value)
+
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace")
+
+    # handle numpy scalars etc. without importing numpy
+    if hasattr(value, "item") and callable(getattr(value, "item")):
+        try:
+            return _to_json_safe(value.item())
+        except Exception:
+            return str(value)
+
+    if isinstance(value, dict):
+        return {str(k): _to_json_safe(v) for k, v in value.items()}
+
+    if isinstance(value, (list, tuple)):
+        return [_to_json_safe(v) for v in value]
+
+    # primitives
+    if isinstance(value, (str, int, float, bool)):
+        return value
+
+    # fallback for any other custom types
+    return str(value)
+
+
 def serialize_document(document: dict) -> dict:
-    """Convert MongoDB document to JSON-serializable format."""
+    """Convert MongoDB document to JSON-serializable format (recursive)."""
     if not document:
         return {}
-
-    # Create a copy to avoid modifying the original
-    serialized = {}
-    for key, value in document.items():
-        if isinstance(value, ObjectId):
-            serialized[key] = str(value)
-        elif isinstance(value, list):
-            serialized[key] = [
-                {k: str(v) if isinstance(v, ObjectId) else v for k, v in item.items()}
-                if isinstance(item, dict)
-                else item
-                for item in value
-            ]
-        else:
-            serialized[key] = value
-
-    return serialized
+    return _to_json_safe(document)
 
 
 def meta_general_info_table(document: dict) -> dbc.Table:
@@ -286,6 +314,220 @@ def meta_info_table(document: dict) -> dbc.Table:
     )
 
 
+def _format_upload_value(value: object) -> str:
+    """Best-effort formatting for values shown in the Upload Information table."""
+    if value is None:
+        return ""
+    if isinstance(value, ObjectId):
+        return str(value)
+    if isinstance(value, (list, tuple)):
+        # archive_paths is typically a list
+        return "\n".join([_format_upload_value(v) for v in value])
+    if isinstance(value, dict):
+        # Keep compact (avoid dumping huge nested structures)
+        items = list(value.items())
+        return ", ".join([f"{k}={_format_upload_value(v)}" for k, v in items[:12]]) + (
+            " ..." if len(items) > 12 else ""
+        )
+    return str(value)
+
+
+def _fetch_upload_document(report_id: str) -> dict | None:
+    """Fetch upload/file information from the files collection."""
+    try:
+        manager = AssasDatabaseManager(
+            database_handler=AssasDatabaseHandler(
+                client=get_mongo_client(app.config["CONNECTIONSTRING"]),
+                backup_directory=app.config["BACKUP_DIRECTORY"],
+                database_name=app.config["MONGO_DB_NAME"],
+            )
+        )
+
+        # Primary: the details page uses system_uuid
+        doc = manager.database_handler.file_collection.find_one(
+            {"system_uuid": str(report_id)}
+        )
+        if doc:
+            return doc
+
+        # Fallback: some flows might route by upload_uuid
+        return manager.database_handler.file_collection.find_one(
+            {"upload_uuid": str(report_id)}
+        )
+    except Exception:
+        logger.exception("Failed to fetch upload document from files collection")
+        return None
+
+
+def meta_upload_info_table(upload_doc: dict | None) -> dbc.Table:
+    """Generate a table displaying upload information from the files collection."""
+    header = [
+        html.Thead(
+            html.Tr(
+                [
+                    html.Th("Upload Attribute", style={"width": "30%"}),
+                    html.Th("Value", style={"width": "70%"}),
+                ]
+            )
+        )
+    ]
+
+    if not upload_doc:
+        body = [
+            html.Tbody(
+                [
+                    html.Tr(
+                        [
+                            html.Td(
+                                "No upload information available",
+                                colSpan=2,
+                                style={"textAlign": "center", "fontStyle": "italic"},
+                            )
+                        ]
+                    )
+                ]
+            )
+        ]
+        return dbc.Table(
+            header + body,
+            striped=True,
+            bordered=True,
+            hover=True,
+            responsive=True,
+            className="mb-4",
+            style={"tableLayout": "fixed"},
+        )
+
+    # Only the fields you requested (and in a friendly order)
+    fields = [
+        ("Upload UUID", "upload_uuid"),
+        ("User", "user"),
+        ("Name", "name"),
+        ("Description", "description"),
+        ("Archive Paths", "archive_paths"),
+    ]
+
+    rows = []
+    for label, key in fields:
+        if key not in upload_doc:
+            continue
+        val = upload_doc.get(key)
+        if val is None or val == "":
+            continue
+
+        rows.append(
+            html.Tr(
+                [
+                    html.Td(label, style={"width": "30%"}),
+                    html.Td(
+                        _format_upload_value(val),
+                        style={
+                            "width": "70%",
+                            "wordWrap": "break-word",
+                            "whiteSpace": "pre-wrap",  # keep newlines for archive_paths
+                        },
+                    ),
+                ]
+            )
+        )
+
+    if not rows:
+        rows = [
+            html.Tr(
+                [
+                    html.Td(
+                        "No upload information available",
+                        colSpan=2,
+                        style={"textAlign": "center", "fontStyle": "italic"},
+                    )
+                ]
+            )
+        ]
+
+    return dbc.Table(
+        header + [html.Tbody(rows)],
+        striped=True,
+        bordered=True,
+        hover=True,
+        responsive=True,
+        className="mb-4",
+        style={"tableLayout": "fixed"},
+    )
+
+
+def meta_technical_metadata_table(
+    document: dict, upload_info: dict | None
+) -> dbc.Table:
+    """Generate a table displaying technical metadata for the dataset."""
+    header = [
+        html.Thead(
+            html.Tr(
+                [
+                    html.Th("Technical Attribute", style={"width": "30%"}),
+                    html.Th("Value", style={"width": "70%"}),
+                ]
+            )
+        )
+    ]
+
+    candidates: list[tuple[str, object]] = [
+        ("Upload UUID", (upload_info or {}).get("upload_uuid")),
+        ("System UUID", document.get("system_uuid") or document.get("system_id")),
+        ("HDF5 Size", document.get("system_size_hdf5")),
+        ("System Size", document.get("system_size")),
+        (
+            "Created At",
+            document.get("created_at")
+            or document.get("creation_date")
+            or document.get("system_date")
+            or document.get("system_created_at"),
+        ),
+    ]
+
+    rows = []
+    for label, raw_value in candidates:
+        if raw_value is None or raw_value == "":
+            continue
+        rows.append(
+            html.Tr(
+                [
+                    html.Td(label, style={"width": "30%"}),
+                    html.Td(
+                        _format_upload_value(raw_value),
+                        style={
+                            "width": "70%",
+                            "wordWrap": "break-word",
+                            "whiteSpace": "pre-wrap",
+                        },
+                    ),
+                ]
+            )
+        )
+
+    if not rows:
+        rows = [
+            html.Tr(
+                [
+                    html.Td(
+                        "No technical metadata available",
+                        colSpan=2,
+                        style={"textAlign": "center", "fontStyle": "italic"},
+                    )
+                ]
+            )
+        ]
+
+    return dbc.Table(
+        header + [html.Tbody(rows)],
+        striped=True,
+        bordered=True,
+        hover=True,
+        responsive=True,
+        className="mb-4",
+        style={"tableLayout": "fixed"},
+    )
+
+
 def layout(report_id: str | None = None) -> html.Div:
     """Layout for the details template page."""
     logger.info(f"report_id {report_id}")
@@ -301,9 +543,18 @@ def layout(report_id: str | None = None) -> html.Div:
     else:
         document = AssasDatabaseManager(
             database_handler=AssasDatabaseHandler(
+                client=MongoClient(app.config["CONNECTIONSTRING"]),
+                backup_directory=app.config["BACKUP_DIRECTORY"],
                 database_name=app.config["MONGO_DB_NAME"],
             )
         ).get_database_entry_by_uuid(report_id)
+
+        upload_doc = _fetch_upload_document(str(report_id))
+        logger.info(f"Fetched upload document: {upload_doc}")
+        upload_doc: dict[str, str] = (
+            upload_doc.get("upload_info", {}) if upload_doc else {}
+        )
+        logger.info(f"Using upload info: {upload_doc}")
 
         logger.info(f"Found document {document}")
         base_url = get_base_url()
@@ -369,10 +620,15 @@ def layout(report_id: str | None = None) -> html.Div:
                             html.Div(
                                 [
                                     dbc.Button(
-                                        "Edit Metadata",
+                                        [
+                                            html.I(
+                                                className="fas fa-pen-to-square me-2"
+                                            ),
+                                            "Edit Metadata",
+                                        ],
                                         id="toggle-edit-metadata",
-                                        color="warning",
-                                        outline=True,
+                                        color="info",
+                                        outline=False,
                                         style={"marginBottom": "1rem"},
                                     ),
                                     html.Div(
@@ -408,6 +664,80 @@ def layout(report_id: str | None = None) -> html.Div:
                 html.Div(
                     id="general-info-table-container",
                     children=meta_general_info_table(document),
+                ),
+                # ✅ Upload Information (expandable, default open)
+                html.Div(
+                    [
+                        html.H4(
+                            "Upload Information",
+                            style={
+                                "color": "#007bff",
+                                "margin": "0",
+                                "fontWeight": "bold",
+                            },
+                        ),
+                        dbc.Button(
+                            [
+                                "Hide",
+                                html.I(className="fas fa-chevron-up ms-2"),
+                            ],
+                            id="toggle-upload-info",
+                            color="link",
+                            className="p-0",
+                        ),
+                    ],
+                    style={
+                        "display": "flex",
+                        "alignItems": "center",
+                        "justifyContent": "space-between",
+                        "marginTop": "2rem",
+                        "marginBottom": "1rem",
+                    },
+                ),
+                dbc.Collapse(
+                    html.Div(
+                        id="upload-info-table-container",
+                        children=meta_upload_info_table(upload_doc),
+                    ),
+                    id="upload-info-collapse",
+                    is_open=True,
+                ),
+                # ✅ Technical Meta Data (expandable, default open)
+                html.Div(
+                    [
+                        html.H4(
+                            "Technical Meta Data",
+                            style={
+                                "color": "#007bff",
+                                "margin": "0",
+                                "fontWeight": "bold",
+                            },
+                        ),
+                        dbc.Button(
+                            [
+                                "Hide",
+                                html.I(className="fas fa-chevron-up ms-2"),
+                            ],
+                            id="toggle-technical-meta",
+                            color="link",
+                            className="p-0",
+                        ),
+                    ],
+                    style={
+                        "display": "flex",
+                        "alignItems": "center",
+                        "justifyContent": "space-between",
+                        "marginTop": "2rem",
+                        "marginBottom": "1rem",
+                    },
+                ),
+                dbc.Collapse(
+                    html.Div(
+                        id="technical-meta-table-container",
+                        children=meta_technical_metadata_table(document, upload_doc),
+                    ),
+                    id="technical-meta-collapse",
+                    is_open=True,
                 ),
                 # Data Variables Table
                 html.H4(
@@ -585,11 +915,11 @@ def save_metadata(
         # SOLUTION: Call database directly instead of using HTTP API
         # This avoids authentication issues
         try:
-            from assasdb import AssasDatabaseManager, AssasDatabaseHandler
-
             # Get database manager
             manager = AssasDatabaseManager(
                 database_handler=AssasDatabaseHandler(
+                    client=get_mongo_client(app.config["CONNECTIONSTRING"]),
+                    backup_directory=app.config["BACKUP_DIRECTORY"],
                     database_name=app.config["MONGO_DB_NAME"],
                 )
             )
@@ -671,3 +1001,33 @@ def save_metadata(
             dash.no_update,
             dash.no_update,
         )
+
+
+@callback(
+    Output("upload-info-collapse", "is_open"),
+    Output("toggle-upload-info", "children"),
+    Input("toggle-upload-info", "n_clicks"),
+    State("upload-info-collapse", "is_open"),
+    prevent_initial_call=True,
+)
+def toggle_upload_info(n_clicks: int, is_open: bool) -> tuple[bool, list]:
+    """Toggle the upload information collapse."""
+    new_open = not is_open
+    if new_open:
+        return new_open, ["Hide", html.I(className="fas fa-chevron-up ms-2")]
+    return new_open, ["Show", html.I(className="fas fa-chevron-down ms-2")]
+
+
+@callback(
+    Output("technical-meta-collapse", "is_open"),
+    Output("toggle-technical-meta", "children"),
+    Input("toggle-technical-meta", "n_clicks"),
+    State("technical-meta-collapse", "is_open"),
+    prevent_initial_call=True,
+)
+def toggle_technical_meta(n_clicks: int, is_open: bool) -> tuple[bool, list]:
+    """Toggle the technical metadata collapse."""
+    new_open = not is_open
+    if new_open:
+        return new_open, ["Hide", html.I(className="fas fa-chevron-up ms-2")]
+    return new_open, ["Show", html.I(className="fas fa-chevron-down ms-2")]

@@ -32,6 +32,7 @@ from zipfile import ZipFile
 from uuid import uuid4
 from pathlib import Path
 from typing import List, Tuple
+from functools import lru_cache
 
 from flask_app import get_mongo_client
 from ...utils.url_utils import get_base_url
@@ -70,108 +71,169 @@ operators = [
 ]
 
 
-def update_table_data() -> pd.DataFrame:
-    """Update the table data from the database.
+# Fields that are not needed for the table view (reduce payload / speed up reads)
+_TABLE_PROJECTION_EXCLUDE = {
+    "meta_data_variables": 0,
+    "system_user_info": 0,
+    "upload_info": 0,
+    "system_imported_from": 0,
+    "meta_description": 0,
+}
 
-    Returns:
-        pd.DataFrame: DataFrame with the table data.
+# DataFrame columns that should be forced into a DataTable-friendly representation
+_TABLE_STRINGIFY_COLUMNS = {
+    "meta_data_variables",
+    "meta_keywords",
+    "meta_tags",
+    "system_user_info",
+}
 
-    """
-    logger.info("Load database entries to table.")
 
-    database_manager = AssasDatabaseManager(
+def _build_database_manager() -> AssasDatabaseManager:
+    return AssasDatabaseManager(
         database_handler=AssasDatabaseHandler(
-            client=get_mongo_client(app.config["CONNECTIONSTRING_ATLAS"]),
+            client=get_mongo_client(app.config["CONNECTIONSTRING"]),
             backup_directory=app.config["BACKUP_DIRECTORY"],
             database_name=app.config["MONGO_DB_NAME"],
         )
     )
 
-    table_data_local = database_manager.get_all_database_entries()
 
-    # Clean complex data types that DataTable can't handle
-    def clean_column_data(df):
-        """Clean DataFrame columns to ensure DataTable compatibility."""
-        df_clean = df.copy()
+def _clean_table_dataframe(df: pd.DataFrame) -> pd.DataFrame:
+    """Normalize dataframe values so Dash DataTable can render them reliably."""
+    if df.empty:
+        return df
 
-        # Convert complex data types to strings
-        for col in df_clean.columns:
-            if col in ["meta_data_variables", "meta_keywords", "meta_tags"]:
-                # Convert lists/dicts to JSON strings
-                df_clean[col] = df_clean[col].apply(
-                    lambda x: str(x) if x is not None else ""
-                )
-            elif col.startswith("meta_") and df_clean[col].dtype == "object":
-                # Convert any other complex metadata to strings
-                df_clean[col] = df_clean[col].astype(str).fillna("")
+    df_clean = df.copy()
 
-        return df_clean
+    for col in df_clean.columns:
+        if col in _TABLE_STRINGIFY_COLUMNS:
+            df_clean[col] = \
+                df_clean[col].apply(lambda x: str(x) if x is not None else "")
+        elif col.startswith("meta_") and df_clean[col].dtype == "object":
+            df_clean[col] = df_clean[col].astype(str).fillna("")
 
-    # Clean the data first
-    table_data_local = clean_column_data(table_data_local)
+    return df_clean
+
+
+def _status_to_html(status: str) -> str:
+    status_classes = {
+        "Valid": "status-valid",
+        "Invalid": "status-invalid",
+        "Converting": "status-converting",
+        "Uploaded": "status-uploaded",
+    }
+    css_class = status_classes.get(status, "status-unknown")
+    return f'<span class="{css_class}">{str(status)}</span>'
+
+
+def _add_table_presentation_columns(df: pd.DataFrame) -> pd.DataFrame:
+    """Add link/HTML columns used by the DataTable."""
+    if df.empty:
+        return df
+
+    out = df.copy()
+
     download_url = f"{get_base_url()}/files/download/"
-    table_data_local["system_download"] = [
-        f'<a href="{download_url}{entry.system_uuid}">hdf5 file</a>'
-        if entry.system_status == "Valid"
-        else '<span class="no-download">no hdf5 file</span>'
-        for entry in table_data_local.itertuples()
-    ]
     details_url = f"{get_base_url()}/details/"
-    table_data_local["meta_name"] = [
-        f'<a href="{details_url}{entry.system_uuid}">{entry.meta_name}</a>'
-        for entry in table_data_local.itertuples()
-    ]
 
-    def get_status_html(
-        status: str,
-    ) -> str:
-        status_classes = {
-            "Valid": "status-valid",
-            "Invalid": "status-invalid",
-            "Converting": "status-converting",
-            "Uploaded": "status-uploaded",
-        }
-        css_class = status_classes.get(status, "status-unknown")
-        return f'<span class="{css_class}">{str(status)}</span>'
+    # system_download
+    if {"system_uuid", "system_status"}.issubset(out.columns):
+        out["system_download"] = [
+            f'<a href="{download_url}{row.system_uuid}">hdf5 file</a>'
+            if row.system_status == "Valid"
+            else '<span class="no-download">no hdf5 file</span>'
+            for row in out.itertuples()
+        ]
 
-    table_data_local["system_status"] = [
-        get_status_html(entry.system_status) for entry in table_data_local.itertuples()
-    ]
+    # meta_name link
+    if {"system_uuid", "meta_name"}.issubset(out.columns):
+        out["meta_name"] = [
+            f'<a href="{details_url}{row.system_uuid}">{row.meta_name}</a>'
+            for row in out.itertuples()
+        ]
 
-    return table_data_local
+    # system_status HTML badge
+    if "system_status" in out.columns:
+        out["system_status"] = [_status_to_html(row.system_status) for row in out.itertuples()]
+
+    return out
+
+
+def update_table_data() -> pd.DataFrame:
+    """Update the table data from the database (table-optimized snapshot)."""
+    logger.info("Load database entries to table.")
+    try:
+        database_manager = _build_database_manager()
+
+        limit = int(app.config.get("DATABASE_TABLE_LIMIT", 2000))
+        batch_size = int(app.config.get("DATABASE_TABLE_BATCH_SIZE", 500))
+        max_time_ms = int(app.config.get("DATABASE_TABLE_MAX_TIME_MS", 12000))
+
+        df = database_manager.get_all_database_entries_safe(
+            projection=_TABLE_PROJECTION_EXCLUDE,
+            limit=limit,
+            batch_size=batch_size,
+            max_time_ms=max_time_ms,
+        )
+
+        df = _clean_table_dataframe(df)
+        df = _add_table_presentation_columns(df)
+        return df
+
+    except Exception:
+        # Critical: don't crash the worker/service due to a transient DB timeout
+        logger.exception("Failed to load database entries; returning empty table.")
+        return pd.DataFrame()
+
+_LAST_GOOD_TABLE_DF: pd.DataFrame = pd.DataFrame()
+
+@lru_cache(maxsize=8)
+def _get_table_data_cached(reload_nonce: int) -> pd.DataFrame:
+    # NOTE: returns a DataFrame; callers should copy() before mutating
+    return update_table_data()
+
+
+def _get_table_data(reload_nonce: int | None) -> pd.DataFrame:
+    global _LAST_GOOD_TABLE_DF
+    try:
+        df = _get_table_data_cached(int(reload_nonce or 0)).copy()
+        if not df.empty:
+            _LAST_GOOD_TABLE_DF = df
+        return df
+    except Exception:
+        logger.exception("Failed to load database entries; serving last known good snapshot.")
+        return _LAST_GOOD_TABLE_DF.copy()
 
 
 def get_database_size() -> str:
-    """Get the overall size of the ASSAS database.
-
-    Returns:
-        str: Overall size of the database in a human-readable format.
-
-    """
-    database_manager = AssasDatabaseManager(
-        database_handler=AssasDatabaseHandler(
-            client=MongoClient(app.config["CONNECTIONSTRING"]),
-            backup_directory=app.config["BACKUP_DIRECTORY"],
-            database_name=app.config["MONGO_DB_NAME"],
+    """Get the overall size of the ASSAS database."""
+    try:
+        database_manager = AssasDatabaseManager(
+            database_handler=AssasDatabaseHandler(
+                client=get_mongo_client(app.config["CONNECTIONSTRING"]),
+                backup_directory=app.config["BACKUP_DIRECTORY"],
+                database_name=app.config["MONGO_DB_NAME"],
+            )
         )
-    )
-    size = database_manager.get_overall_database_size()
-
-    if size is None or len(size) == 0:
+        size = database_manager.get_overall_database_size()
+        if size is None or len(size) == 0:
+            return "0 B"
+        return size
+    except Exception:
+        logger.exception("Failed to get database size.")
         return "0 B"
 
-    return size
 
-
+# IMPORTANT: remove import-time DB calls (breaks gunicorn --preload on transient timeouts)
 table_data = update_table_data()
-database_size = get_database_size()
+#database_size = get_database_size()
 now = pd.Timestamp.now().strftime("%Y-%m-%d %H:%M:%S")
-
 ALL = len(table_data)
 PAGE_SIZE = 30
-PAGE_MAX_SIZE = 100
-
 PAGE_COUNT = ALL / PAGE_SIZE
+#PAGE_COUNT = 1
+PAGE_MAX_SIZE = 100
 
 dash.register_page(__name__, path="/database")
 
@@ -646,7 +708,7 @@ def layout() -> html.Div:
                                                                                                         [
                                                                                                             html.Li(
                                                                                                                 "Open 'Database Tools' section above",
-                                                                                                                className="mb-1",
+                                                                                                                className="mb-1",                                                             
                                                                                                                 style={
                                                                                                                     "fontSize": "clamp(0.7rem, 1.8vw, 0.8rem)"
                                                                                                                 },
@@ -1071,7 +1133,7 @@ def layout() -> html.Div:
                                                                                                         },
                                                                                                     ),
                                                                                                     html.Td(
-                                                                                                        database_size,
+                                                                                                        "0 B",
                                                                                                         className="text-end",
                                                                                                         style={
                                                                                                             "fontSize": "clamp(0.7rem, 1.8vw, 0.8rem)"
@@ -1227,7 +1289,7 @@ def layout() -> html.Div:
                                                                                                 className="d-none d-md-inline",
                                                                                             ),
                                                                                         ],
-                                                                                        id="export-csv-btn",
+                                                                                        id="export-csv-btn-database",
                                                                                         color="success",
                                                                                         outline=True,
                                                                                         size="sm",
@@ -2224,7 +2286,7 @@ def update_table_with_pagination(
         sort_by = []
 
     # Get fresh data (especially important after refresh)
-    dataframe = update_table_data()
+    dataframe = _get_table_data(n_clicks)
     logger.info(f"Loaded {len(dataframe)} records from database")
 
     # Apply filtering using enhanced function
@@ -2300,7 +2362,7 @@ def update_pagination_max_value(
         page_size = PAGE_SIZE
 
     # Get fresh data
-    dataframe = update_table_data()
+    dataframe = _get_table_data(n_clicks)
 
     # Apply filtering to get accurate count
     if filter_query:
@@ -2477,20 +2539,14 @@ def handle_mobile_navigation(
     return new_page, prev_disabled, next_disabled
 
 
-# Add these callback functions for export functionality
-
-
-def prepare_export_data(filter_query, sort_by, export_options):
+def prepare_export_data(filter_query, sort_by, export_options, reload_nonce: int = 0):
     """Prepare data for export with filters and sorting applied."""
     try:
-        # Get fresh data
-        df = update_table_data()
+        df = _get_table_data(reload_nonce)
 
-        # Apply filters if requested
-        if "apply_filters" in export_options and filter_query:
+        if "apply_filters" in (export_options or []) and filter_query:
             df = apply_filters(df, filter_query)
 
-        # Apply sorting if requested
         if sort_by and len(sort_by) > 0:
             df = df.sort_values(
                 [col["column_id"] for col in sort_by],
@@ -2501,7 +2557,7 @@ def prepare_export_data(filter_query, sort_by, export_options):
         return df
     except Exception as e:
         logger.error(f"Error preparing export data: {e}")
-        return pd.DataFrame()  # Return empty DataFrame on error
+        return pd.DataFrame()
 
 
 def clean_data_for_export(df, export_options):
@@ -2635,55 +2691,60 @@ def add_metadata_sheet_basic(writer, filter_query, sort_by, export_options):
 @callback(
     [
         Output("download-csv-database", "data"),
-        Output("export-status-database", "children"),
+        Output("export-status-database", "children", allow_duplicate=True),
     ],
-    Input("export-csv-btn", "n_clicks"),
+    Input("export-csv-btn-database", "n_clicks"),
     [
         State("datatable-paging-and-sorting", "derived_viewport_data"),
         State("datatable-paging-and-sorting", "data"),
         State("datatable-paging-and-sorting", "filter_query"),
         State("datatable-paging-and-sorting", "sort_by"),
         State("export-options", "value"),
+        State("reload_page", "n_clicks"),
     ],
     prevent_initial_call=True,
 )
 def export_csv(
-    n_clicks, current_page_data, all_data, filter_query, sort_by, export_options
+    n_clicks: int,
+    current_page_data: List[dict],
+    all_data: List[dict],
+    filter_query: str,
+    sort_by,
+    export_options,
+    reload_nonce,
 ):
+    logger.info("CSV export initiated.")
     if not n_clicks:
         raise PreventUpdate
 
     try:
         export_options = export_options or []
 
-        # Determine what data to export
         if "current_page" in export_options:
             export_data = current_page_data or []
             status_msg = f"✅ Exported {len(export_data)} records (current page) to CSV"
         else:
-            # Get all data with current filters and sorting
-            df = prepare_export_data(filter_query, sort_by, export_options)
+            df = prepare_export_data(
+                filter_query, sort_by, export_options, reload_nonce=reload_nonce
+            )
             export_data = df.to_dict("records")
             status_msg = f"✅ Exported {len(export_data)} records to CSV"
 
         if not export_data:
             logger.warning("No data to export")
-            return dash.no_update, "⚠️ No data to export"
+            return dash.no_update, "No data to export"
 
-        # Convert to DataFrame for CSV export
         df_export = pd.DataFrame(export_data)
-
-        # Clean data for export
         df_export = clean_data_for_export(df_export, export_options)
 
-        # Generate timestamp for filename
         timestamp = pd.Timestamp.now().strftime("%Y%m%d_%H%M%S")
         filename = f"assas_database_export_{timestamp}.csv"
 
-        # Create CSV download
-        csv_string = df_export.to_csv(index=False, encoding="utf-8")
-
-        return dict(content=csv_string, filename=filename), status_msg
+        # FIX: send_data_frame expects a function, not a prebuilt string
+        return (
+            dcc.send_data_frame(df_export.to_csv, filename, index=False, encoding="utf-8"),
+            status_msg,
+        )
 
     except Exception as e:
         logger.error(f"CSV export error: {e}")
@@ -2702,72 +2763,60 @@ def export_csv(
         State("datatable-paging-and-sorting", "filter_query"),
         State("datatable-paging-and-sorting", "sort_by"),
         State("export-options", "value"),
+        State("reload_page", "n_clicks"),  # NEW: cache key for Excel export too
     ],
     prevent_initial_call=True,
 )
 def export_excel(
-    n_clicks, current_page_data, all_data, filter_query, sort_by, export_options
+    n_clicks,
+    current_page_data,
+    all_data,
+    filter_query,
+    sort_by,
+    export_options,
+    reload_nonce,
 ):
-    """Export table data to Excel format."""
+    logger.info("Excel export initiated.")
     if not n_clicks:
         raise PreventUpdate
 
     try:
         export_options = export_options or []
 
-        # Determine what data to export
         if "current_page" in export_options:
             export_data = current_page_data or []
-            status_msg = (
-                f"✅ Exported {len(export_data)} records (current page) to Excel"
-            )
+            status_msg = f"✅ Exported {len(export_data)} records (current page) to Excel"
         else:
-            # Get all data with current filters and sorting
-            df = prepare_export_data(filter_query, sort_by, export_options)
+            df = prepare_export_data(
+                filter_query, sort_by, export_options, reload_nonce=reload_nonce
+            )
             export_data = df.to_dict("records")
             status_msg = f"✅ Exported {len(export_data)} records to Excel"
 
         if not export_data:
             return dash.no_update, "⚠️ No data to export"
 
-        # Convert to DataFrame for Excel export
         df_export = pd.DataFrame(export_data)
-
-        # Clean data for export
         df_export = clean_data_for_export(df_export, export_options)
 
-        # Generate timestamp for filename
         timestamp = pd.Timestamp.now().strftime("%Y%m%d_%H%M%S")
         filename = f"assas_database_export_{timestamp}.xlsx"
 
-        # 🔧 FIX: Create Excel file in memory with proper encoding
         buffer = io.BytesIO()
-
         with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
-            # Main data sheet
             df_export.to_excel(writer, sheet_name="ASSAS Database", index=False)
-
-            # Get workbook and worksheet for formatting
             workbook = writer.book
             worksheet = workbook["ASSAS Database"]
-
-            # Apply basic formatting
             format_excel_export_basic(worksheet, df_export)
-
-            # Add metadata sheet
             add_metadata_sheet_basic(writer, filter_query, sort_by, export_options)
 
-        # 🔧 FIX: Encode binary data to base64 for JSON serialization
         buffer.seek(0)
-        excel_data = buffer.getvalue()
-
-        # Encode to base64 string for JSON serialization
-        encoded_data = base64.b64encode(excel_data).decode("utf-8")
+        encoded_data = base64.b64encode(buffer.getvalue()).decode("utf-8")
 
         return {
             "content": encoded_data,
             "filename": filename,
-            "base64": True,  # Tell Dash this is base64 encoded
+            "base64": True,
             "type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         }, status_msg
 

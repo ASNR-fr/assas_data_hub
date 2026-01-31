@@ -24,9 +24,7 @@ class UserManager:
             # Get configuration from Flask app or environment
             if current_app:
                 # Use Flask app configuration
-                connection_string = current_app.config.get(
-                    "CONNECTIONSTRING", "mongodb://localhost:27017/"
-                )
+                connection_string = current_app.config.get("CONNECTIONSTRING", "")
                 db_name = current_app.config.get("MONGO_DB_NAME", "assas_dev")
                 collection_name = current_app.config.get(
                     "USER_COLLECTION_NAME", "users"
@@ -36,9 +34,7 @@ class UserManager:
                 # Fall back to environment variables or defaults
                 load_dotenv()
 
-                connection_string = os.getenv(
-                    "CONNECTIONSTRING", "mongodb://localhost:27017/"
-                )
+                connection_string = os.getenv("CONNECTIONSTRING", "")
                 db_name = os.getenv("MONGO_DB_NAME", "assas_dev")
                 collection_name = os.getenv("USER_COLLECTION_NAME", "users")
                 logger.info("Using environment configuration")
@@ -431,6 +427,127 @@ class UserManager:
 
         except Exception as e:
             logger.error(f"Error soft deleting user: {e}")
+            return False
+
+    def update_user_by_id(
+        self, user_id: str, updates: Dict[str, Any]
+    ) -> Optional[Dict]:
+        """Update a user by ID and return the updated user."""
+        try:
+            if not updates:
+                logger.warning("No updates provided")
+                return None
+
+            if isinstance(user_id, str):
+                user_id = ObjectId(user_id)
+
+            current_user = self.users_collection.find_one({"_id": user_id})
+            if not current_user:
+                logger.error(f"User with ID {user_id} not found")
+                return None
+
+            # Enforce unique email/username if changed
+            if "email" in updates:
+                existing = self.get_user_by_email(updates["email"])
+                if existing and existing["_id"] != str(user_id):
+                    logger.error("Email already in use")
+                    return None
+
+            if "username" in updates:
+                existing = self.get_user_by_username(updates["username"])
+                if existing and existing["_id"] != str(user_id):
+                    logger.error("Username already in use")
+                    return None
+
+            # Protect last admin from losing admin role or being deactivated
+            if "admin" in current_user.get("roles", []):
+                admin_count = self.users_collection.count_documents({"roles": "admin"})
+                if admin_count <= 1:
+                    roles = updates.get("roles", current_user.get("roles", []))
+                    is_active = updates.get(
+                        "is_active", current_user.get("is_active", True)
+                    )
+                    if "admin" not in roles or is_active is False:
+                        logger.error("Cannot remove/deactivate the last admin user")
+                        return None
+
+            updates["updated_at"] = datetime.utcnow()
+            logger.info(f"Updating user ID !!! {user_id} with updates: {updates}")
+            result = self.users_collection.update_one(
+                {"_id": user_id}, {"$set": updates}
+            )
+            if result.modified_count > 0:
+                return self.get_user_by_id(str(user_id))
+
+            logger.warning("No changes made to user")
+            return self.get_user_by_id(str(user_id))
+
+        except Exception as e:
+            logger.error(f"Error updating user by ID: {e}")
+            return None
+
+    def unset_user_field_by_id(self, user_id: str, field_name: str) -> bool:
+        """Unset (delete) a field from a user document by ID.
+
+        This is intended for removing custom properties via MongoDB `$unset`.
+        Returns True if the user exists and the operation succeeded.
+        """
+        try:
+            if not field_name or not isinstance(field_name, str):
+                logger.error("Field name is required for unset")
+                return False
+
+            field = field_name.strip()
+            if (
+                not field
+                or field.startswith("$")
+                or "." in field
+                or field.startswith("_")
+            ):
+                logger.error(f"Invalid field name for unset: {field_name}")
+                return False
+
+            # Protect critical fields from being removed
+            protected = {
+                "_id",
+                "id",
+                "username",
+                "email",
+                "provider",
+                "roles",
+                "is_active",
+                "created_at",
+                "updated_at",
+                "last_login",
+                "login_count",
+                "basic_auth_password_hash",
+                "temp_basic_auth_password_hash",
+            }
+            if field in protected:
+                logger.error(f"Refusing to unset protected field: {field}")
+                return False
+
+            obj_id = ObjectId(user_id) if isinstance(user_id, str) else user_id
+
+            # Ensure user exists
+            current_user = self.users_collection.find_one({"_id": obj_id})
+            if not current_user:
+                logger.error(f"User with ID {user_id} not found")
+                return False
+
+            result = self.users_collection.update_one(
+                {"_id": obj_id},
+                {"$unset": {field: ""}, "$set": {"updated_at": datetime.utcnow()}},
+            )
+
+            # modified_count can be 0 if the field didn't exist;
+            # matched_count indicates success.
+            return result.matched_count > 0
+
+        except Exception as e:
+            logger.error(
+                f"Error unsetting field '{field_name}' for user {user_id}: {e}"
+            )
             return False
 
     def close(self) -> None:

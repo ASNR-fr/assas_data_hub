@@ -20,16 +20,16 @@ def get_mongo_client(connection_string: str) -> MongoClient:
     """Get a global MongoClient instance."""
     global _client
     if _client is None:
-        logger.info("Creating new global MongoClient.")
+        logger.info("Creating new global MongoClient. ")
+        logger.info(f"Connection string: {connection_string}")
         _client = MongoClient(
             connection_string,
-            maxPoolSize=50,
-            minPoolSize=5,
-            serverSelectionTimeoutMS=10000,
+            serverSelectionTimeoutMS=5000,
             socketTimeoutMS=20000,
-            connectTimeoutMS=10000,
-            retryWrites=True,
+            connectTimeoutMS=5000,
         )
+    else:
+        logger.debug("Reusing existing global MongoClient.")
     return _client
 
 
