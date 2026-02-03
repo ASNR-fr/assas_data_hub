@@ -12,7 +12,7 @@ from dash import dash, html, Input, Output, State, dcc
 from dash.long_callback import DiskcacheLongCallbackManager
 
 from .components import encode_svg_image_hq
-from flask import redirect, request, Response, session
+from flask import redirect, request, Response, session, send_from_directory
 from ..auth_utils import is_authenticated, get_current_user
 from ..auth.oauth_auth import init_oauth
 from ..utils.url_utils import (
@@ -408,8 +408,8 @@ footer = html.Footer(
                                             "margin": "0.5rem 0 1rem 0",
                                             "boxShadow": "0 2px 4px rgba(0,0,0,0.06)",
                                             "display": "block",
-                                            "marginLeft": "auto",  # <-- add this
-                                            "marginRight": "auto",  # <-- add this
+                                            "marginLeft": "auto",
+                                            "marginRight": "auto",
                                         },
                                         alt="ASSAS Logo",
                                     ),
@@ -894,12 +894,6 @@ def serve_layout() -> html.Div:
                             "minHeight": "calc(100vh - 160px - 200px)",
                             "paddingTop": "160px",
                             "paddingBottom": "2rem",
-                            # "paddingLeft": "1vw",
-                            # "paddingRight": "1vw",
-                            # "marginLeft": "auto",
-                            # "marginRight": "auto",
-                            # "maxWidth": "1200px",
-                            # "width": "100%",
                         },
                     ),
                     footer,
@@ -988,6 +982,24 @@ def init_dashboard(server: object) -> object:
     pages_folder = os.path.join(os.path.dirname(os.path.abspath(__file__)), "pages")
     assets_folder = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets")
     logger.debug("pages folder %s, assets_folder %s" % (pages_folder, assets_folder))
+
+    @server.route("/favicon.ico")
+    def favicon_root() -> Response:
+        logger.debug("Serving favicon for root URL: /favicon.ico.")
+        return send_from_directory(
+            assets_folder,
+            "favicon.ico",
+            mimetype="image/vnd.microsoft.icon",
+        )
+
+    @server.route(f"{get_base_url()}/favicon.ico")
+    def favicon_base() -> Response:
+        logger.debug(f"Serving favicon for base URL: {get_base_url()}/favicon.ico.")
+        return send_from_directory(
+            assets_folder,
+            "favicon.ico",
+            mimetype="image/vnd.microsoft.icon",
+        )
 
     launch_uid = uuid.uuid4()
 

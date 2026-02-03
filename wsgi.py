@@ -11,7 +11,7 @@ logger = logging.getLogger("assas_app")
 # Set logging to DEBUG level for better debugging
 logging.basicConfig(
     format="%(asctime)s %(process)d %(module)s %(levelname)s: %(message)s",
-    level=logging.INFO,  # Changed to DEBUG
+    level=logging.DEBUG,
     stream=sys.stdout,
 )
 

@@ -1262,88 +1262,6 @@ def layout() -> html.Div:
                                                                 md=6,
                                                                 className="d-flex align-items-center mb-2 mb-md-0",
                                                             ),
-                                                            # Export Buttons Section (Right)
-                                                            dbc.Col(
-                                                                [
-                                                                    html.Div(
-                                                                        [
-                                                                            # Export label (hidden on mobile)
-                                                                            html.Span(
-                                                                                "Export:",
-                                                                                className="me-2 text-muted fw-bold d-none d-lg-inline",
-                                                                                style={
-                                                                                    "fontSize": "0.9rem",
-                                                                                    "alignSelf": "center",
-                                                                                },
-                                                                            ),
-                                                                            # Export buttons group
-                                                                            dbc.ButtonGroup(
-                                                                                [
-                                                                                    dbc.Button(
-                                                                                        [
-                                                                                            html.I(
-                                                                                                className="fas fa-file-csv me-1"
-                                                                                            ),
-                                                                                            html.Span(
-                                                                                                "CSV",
-                                                                                                className="d-none d-md-inline",
-                                                                                            ),
-                                                                                        ],
-                                                                                        id="export-csv-btn-database",
-                                                                                        color="success",
-                                                                                        outline=True,
-                                                                                        size="sm",
-                                                                                        className="export-btn",
-                                                                                        style={
-                                                                                            "fontSize": "clamp(0.7rem, 1.5vw, 0.8rem)",
-                                                                                            "fontWeight": "600",
-                                                                                            "borderRadius": "0.375rem 0 0 0.375rem",
-                                                                                            "minWidth": "50px",
-                                                                                        },
-                                                                                    ),
-                                                                                    dbc.Button(
-                                                                                        [
-                                                                                            html.I(
-                                                                                                className="fas fa-file-excel me-1"
-                                                                                            ),
-                                                                                            html.Span(
-                                                                                                "Excel",
-                                                                                                className="d-none d-md-inline",
-                                                                                            ),
-                                                                                        ],
-                                                                                        id="export-excel-btn",
-                                                                                        color="success",
-                                                                                        outline=True,
-                                                                                        size="sm",
-                                                                                        className="export-btn",
-                                                                                        style={
-                                                                                            "fontSize": "clamp(0.7rem, 1.5vw, 0.8rem)",
-                                                                                            "fontWeight": "600",
-                                                                                            "borderRadius": "0 0.375rem 0.375rem 0",
-                                                                                            "minWidth": "50px",
-                                                                                        },
-                                                                                    ),
-                                                                                ],
-                                                                                size="sm",
-                                                                            ),
-                                                                        ],
-                                                                        className="d-flex align-items-center justify-content-end",
-                                                                    ),
-                                                                    # Export status
-                                                                    html.Div(
-                                                                        "",
-                                                                        id="export-status-database",
-                                                                        className="text-muted small text-end mt-1",
-                                                                        style={
-                                                                            "fontSize": "0.7rem",
-                                                                            "minHeight": "1rem",
-                                                                        },
-                                                                    ),
-                                                                ],
-                                                                xs=12,
-                                                                md=6,
-                                                                className="d-flex flex-column align-items-end",
-                                                            ),
                                                         ],
                                                         className="align-items-center",
                                                     )
@@ -1529,60 +1447,146 @@ def layout() -> html.Div:
                                                         ],
                                                         className="mb-3",
                                                     ),
-                                                    # NEW: Export Options Section (below settings)
                                                     dbc.Row(
                                                         [
                                                             dbc.Col(
                                                                 [
-                                                                    html.Div(
-                                                                        [
-                                                                            html.H6(
-                                                                                [
-                                                                                    html.I(
-                                                                                        className="fas fa-file-export me-2"
-                                                                                    ),
-                                                                                    "Export Options",
-                                                                                ],
-                                                                                className="mb-2 text-secondary",
-                                                                                style={
-                                                                                    "fontSize": "clamp(0.8rem, 2vw, 0.9rem)"
-                                                                                },
-                                                                            ),
-                                                                            dbc.Checklist(
-                                                                                options=[
-                                                                                    {
-                                                                                        "label": "Current page only",
-                                                                                        "value": "current_page",
-                                                                                    },
-                                                                                    {
-                                                                                        "label": "Apply current filters",
-                                                                                        "value": "apply_filters",
-                                                                                    },
-                                                                                    {
-                                                                                        "label": "Include metadata links",
-                                                                                        "value": "include_links",
-                                                                                    },
-                                                                                ],
-                                                                                value=[
-                                                                                    "apply_filters"
-                                                                                ],
-                                                                                id="export-options",
-                                                                                inline=True,
-                                                                                className="export-options-list",
-                                                                                style={
-                                                                                    "fontSize": "clamp(0.7rem, 1.5vw, 0.75rem)",
-                                                                                    "color": "#6c757d",
-                                                                                },
-                                                                            ),
-                                                                        ],
-                                                                        className="export-options-container",
+                                                                    dbc.Card(
+                                                                        dbc.CardBody(
+                                                                            [
+                                                                                dbc.Row(
+                                                                                    [
+                                                                                        # LEFT: export options
+                                                                                        dbc.Col(
+                                                                                            [
+                                                                                                html.Div(
+                                                                                                    [
+                                                                                                        html.H6(
+                                                                                                            [
+                                                                                                                html.I(className="fas fa-sliders-h me-2"),
+                                                                                                                "Export Options",
+                                                                                                            ],
+                                                                                                            className="mb-2 text-secondary",
+                                                                                                            style={
+                                                                                                                "fontSize": "clamp(0.8rem, 2vw, 0.9rem)",
+                                                                                                                "whiteSpace": "nowrap",
+                                                                                                            },
+                                                                                                        ),
+                                                                                                        dbc.Checklist(
+                                                                                                            options=[
+                                                                                                                {"label": "Current page only", "value": "current_page"},
+                                                                                                                {"label": "Apply current filters", "value": "apply_filters"},
+                                                                                                                {"label": "Include metadata links", "value": "include_links"},
+                                                                                                            ],
+                                                                                                            value=["apply_filters"],
+                                                                                                            id="export-options",
+                                                                                                            inline=True,
+                                                                                                            className="export-options-list mb-0",
+                                                                                                            style={
+                                                                                                                "fontSize": "clamp(0.7rem, 1.5vw, 0.75rem)",
+                                                                                                                "color": "#6c757d",
+                                                                                                            },
+                                                                                                        ),
+                                                                                                    ],
+                                                                                                    className="d-flex flex-column",
+                                                                                                )
+                                                                                            ],
+                                                                                            xs=12,
+                                                                                            md=8,
+                                                                                            className="mb-3 mb-md-0",
+                                                                                        ),
+
+                                                                                        # RIGHT: buttons + status below (right-aligned)
+                                                                                        dbc.Col(
+                                                                                            [
+                                                                                                html.Div(
+                                                                                                    [
+                                                                                                        html.Div(
+                                                                                                            [
+                                                                                                                html.Span(
+                                                                                                                    "Export:",
+                                                                                                                    className="me-2 text-muted fw-bold d-none d-lg-inline",
+                                                                                                                    style={
+                                                                                                                        "fontSize": "0.9rem",
+                                                                                                                        "alignSelf": "center",
+                                                                                                                    },
+                                                                                                                ),
+                                                                                                                dbc.ButtonGroup(
+                                                                                                                    [
+                                                                                                                        dbc.Button(
+                                                                                                                            [
+                                                                                                                                html.I(className="fas fa-file-csv me-1"),
+                                                                                                                                html.Span("CSV", className="d-none d-md-inline"),
+                                                                                                                            ],
+                                                                                                                            id="export-csv-btn-database",
+                                                                                                                            color="success",
+                                                                                                                            outline=True,
+                                                                                                                            size="sm",
+                                                                                                                            className="export-btn",
+                                                                                                                            style={
+                                                                                                                                "fontSize": "clamp(0.7rem, 1.5vw, 0.8rem)",
+                                                                                                                                "fontWeight": "600",
+                                                                                                                                "minWidth": "70px",
+                                                                                                                            },
+                                                                                                                        ),
+                                                                                                                        dbc.Button(
+                                                                                                                            [
+                                                                                                                                html.I(className="fas fa-file-excel me-1"),
+                                                                                                                                html.Span("Excel", className="d-none d-md-inline"),
+                                                                                                                            ],
+                                                                                                                            id="export-excel-btn",
+                                                                                                                            color="success",
+                                                                                                                            outline=True,
+                                                                                                                            size="sm",
+                                                                                                                            className="export-btn",
+                                                                                                                            style={
+                                                                                                                                "fontSize": "clamp(0.7rem, 1.5vw, 0.8rem)",
+                                                                                                                                "fontWeight": "600",
+                                                                                                                                "minWidth": "70px",
+                                                                                                                            },
+                                                                                                                        ),
+                                                                                                                    ],
+                                                                                                                    size="sm",
+                                                                                                                ),
+                                                                                                            ],
+                                                                                                            className="d-flex align-items-center justify-content-md-end",
+                                                                                                            style={"whiteSpace": "nowrap"},
+                                                                                                        ),
+                                                                                                        html.Div(
+                                                                                                            "",
+                                                                                                            id="export-status-database",
+                                                                                                            className="text-muted small mt-2 text-md-end",
+                                                                                                            style={
+                                                                                                                "fontSize": "0.75rem",
+                                                                                                                "minHeight": "1rem",
+                                                                                                            },
+                                                                                                        ),
+                                                                                                    ],
+                                                                                                    className="d-flex flex-column",
+                                                                                                )
+                                                                                            ],
+                                                                                            xs=12,
+                                                                                            md=4,
+                                                                                        ),
+                                                                                    ],
+                                                                                    className="g-3 align-items-start align-items-md-center",
+                                                                                ),
+                                                                            ],
+                                                                            style={"padding": "1.25rem"},
+                                                                        ),
+                                                                        style={
+                                                                            "border": "1px solid #dee2e6",
+                                                                            "borderRadius": "12px",
+                                                                            "backgroundColor": "#f8f9fa",
+                                                                        },
+                                                                        className="mb-3",
                                                                     )
                                                                 ],
                                                                 xs=12,
-                                                                className="mb-3",
-                                                            )
+                                                            ),
                                                         ]
                                                     ),
+
                                                     # Enhanced Table Container - Mobile Responsive (existing table code stays the same)
                                                     html.Div(
                                                         [
