@@ -166,8 +166,8 @@ def update_table_data() -> pd.DataFrame:
     try:
         database_manager = _build_database_manager()
 
-        limit = int(app.config.get("DATABASE_TABLE_LIMIT", 2000))
-        batch_size = int(app.config.get("DATABASE_TABLE_BATCH_SIZE", 500))
+        limit = int(app.config.get("DATABASE_TABLE_LIMIT", 1600))
+        batch_size = int(app.config.get("DATABASE_TABLE_BATCH_SIZE", 100))
         max_time_ms = int(app.config.get("DATABASE_TABLE_MAX_TIME_MS", 12000))
 
         df = database_manager.get_all_database_entries_safe(

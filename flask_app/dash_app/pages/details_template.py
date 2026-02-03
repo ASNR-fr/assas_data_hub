@@ -6,11 +6,12 @@ This page retrieves a report by its ID and displays its metadata in a table form
 import dash
 import dash_bootstrap_components as dbc
 import logging
+import re
+
+from typing import Any, Dict
 from bson import ObjectId
 from datetime import date, datetime
 from uuid import UUID
-
-
 from flask import current_app as app
 from dash import html, Input, Output, State, callback, dcc
 
@@ -90,7 +91,20 @@ def meta_general_info_table(document: dict) -> dbc.Table:
             [
                 html.Tr(
                     [
-                        html.Td("Name", style={"width": "30%"}),
+                        html.Td("Title", style={"width": "30%"}),
+                        html.Td(
+                            document.get("meta_title", ""),
+                            style={
+                                "width": "70%",
+                                "wordWrap": "break-word",
+                                "whiteSpace": "normal",
+                            },
+                        ),
+                    ]
+                ),
+                html.Tr(
+                    [
+                        html.Td("Technical Name", style={"width": "30%"}),
                         html.Td(
                             document.get("meta_name", ""),
                             style={
@@ -528,6 +542,98 @@ def meta_technical_metadata_table(
     )
 
 
+def meta_user_info_table(current_user: dict | None) -> dbc.Table:
+    """Generate a table displaying information about the currently logged-in user."""
+    logger.info(f"Generating user info table for user: {current_user}")
+    header = [
+        html.Thead(
+            html.Tr(
+                [
+                    html.Th("User Attribute", style={"width": "30%"}),
+                    html.Th("Value", style={"width": "70%"}),
+                ]
+            )
+        )
+    ]
+
+    if not current_user:
+        body = [
+            html.Tbody(
+                [
+                    html.Tr(
+                        [
+                            html.Td(
+                                "No user information available",
+                                colSpan=2,
+                                style={"textAlign": "center", "fontStyle": "italic"},
+                            )
+                        ]
+                    )
+                ]
+            )
+        ]
+        return dbc.Table(
+            header + body,
+            striped=True,
+            bordered=True,
+            hover=True,
+            responsive=True,
+            className="mb-4",
+            style={"tableLayout": "fixed"},
+        )
+
+    candidates: list[tuple[str, object]] = [
+        ("User", current_user.get("user") or current_user.get("username")),
+        ("Name", current_user.get("name")),
+        ("Email", current_user.get("email")),
+        ("Roles", ", ".join(current_user.get("roles", []) or [])),
+        ("Subject", current_user.get("sub") or current_user.get("subject")),
+    ]
+
+    rows: list[html.Tr] = []
+    for label, raw_value in candidates:
+        if raw_value is None or raw_value == "":
+            continue
+        rows.append(
+            html.Tr(
+                [
+                    html.Td(label, style={"width": "30%"}),
+                    html.Td(
+                        _format_upload_value(raw_value),
+                        style={
+                            "width": "70%",
+                            "wordWrap": "break-word",
+                            "whiteSpace": "pre-wrap",
+                        },
+                    ),
+                ]
+            )
+        )
+
+    if not rows:
+        rows = [
+            html.Tr(
+                [
+                    html.Td(
+                        "No user information available",
+                        colSpan=2,
+                        style={"textAlign": "center", "fontStyle": "italic"},
+                    )
+                ]
+            )
+        ]
+
+    return dbc.Table(
+        header + [html.Tbody(rows)],
+        striped=True,
+        bordered=True,
+        hover=True,
+        responsive=True,
+        className="mb-4",
+        style={"tableLayout": "fixed"},
+    )
+
+
 def layout(report_id: str | None = None) -> html.Div:
     """Layout for the details template page."""
     logger.info(f"report_id {report_id}")
@@ -560,6 +666,9 @@ def layout(report_id: str | None = None) -> html.Div:
         base_url = get_base_url()
         datacite_url = f"{base_url}/files/datacite/{report_id}"
 
+        user_info: dict[Any, Any] = document.get("system_user_info", {})
+        logger.info(f"Using user info: {user_info}")
+
         current_user = get_current_user()
         show_edit = "admin" in current_user.get(
             "roles", []
@@ -578,7 +687,7 @@ def layout(report_id: str | None = None) -> html.Div:
                     [
                         html.H2(
                             "Dataset Details Page",
-                            id="dataset-title",
+                            id="dataset-page-title",
                             style={
                                 "fontWeight": "bold",
                                 "color": "#2c3e50",
@@ -587,8 +696,8 @@ def layout(report_id: str | None = None) -> html.Div:
                             },
                         ),
                         html.P(
-                            f"Name: {document.get('meta_name', '')}",
-                            id="dataset-name",
+                            f"Titel: {document.get('meta_title', '')}",
+                            id="dataset-meta-title",
                             style={
                                 "fontSize": "1.1rem",
                                 "color": "#444",
@@ -596,8 +705,8 @@ def layout(report_id: str | None = None) -> html.Div:
                             },
                         ),
                         html.P(
-                            f"Description: {document.get('meta_description', '')}",
-                            id="dataset-description",
+                            f"Technical Name: {document.get('meta_name', '')}",
+                            id="dataset-meta-name",
                             style={
                                 "fontSize": "1.1rem",
                                 "color": "#444",
@@ -665,7 +774,44 @@ def layout(report_id: str | None = None) -> html.Div:
                     id="general-info-table-container",
                     children=meta_general_info_table(document),
                 ),
-                # ✅ Upload Information (expandable, default open)
+                # ✅ User Information (expandable, default CLOSED)
+                html.Div(
+                    [
+                        html.H4(
+                            "User Information",
+                            style={
+                                "color": "#007bff",
+                                "margin": "0",
+                                "fontWeight": "bold",
+                            },
+                        ),
+                        dbc.Button(
+                            [
+                                "Show",
+                                html.I(className="fas fa-chevron-down ms-2"),
+                            ],
+                            id="toggle-user-info",
+                            color="link",
+                            className="p-0",
+                        ),
+                    ],
+                    style={
+                        "display": "flex",
+                        "alignItems": "center",
+                        "justifyContent": "space-between",
+                        "marginTop": "2rem",
+                        "marginBottom": "1rem",
+                    },
+                ),
+                dbc.Collapse(
+                    html.Div(
+                        id="user-info-table-container",
+                        children=meta_user_info_table(user_info),
+                    ),
+                    id="user-info-collapse",
+                    is_open=False,
+                ),
+                # ✅ Upload Information (expandable, default CLOSED)
                 html.Div(
                     [
                         html.H4(
@@ -678,8 +824,8 @@ def layout(report_id: str | None = None) -> html.Div:
                         ),
                         dbc.Button(
                             [
-                                "Hide",
-                                html.I(className="fas fa-chevron-up ms-2"),
+                                "Show",
+                                html.I(className="fas fa-chevron-down ms-2"),
                             ],
                             id="toggle-upload-info",
                             color="link",
@@ -700,9 +846,9 @@ def layout(report_id: str | None = None) -> html.Div:
                         children=meta_upload_info_table(upload_doc),
                     ),
                     id="upload-info-collapse",
-                    is_open=True,
+                    is_open=False,
                 ),
-                # ✅ Technical Meta Data (expandable, default open)
+                # ✅ Technical Meta Data (expandable, default CLOSED)
                 html.Div(
                     [
                         html.H4(
@@ -715,8 +861,8 @@ def layout(report_id: str | None = None) -> html.Div:
                         ),
                         dbc.Button(
                             [
-                                "Hide",
-                                html.I(className="fas fa-chevron-up ms-2"),
+                                "Show",
+                                html.I(className="fas fa-chevron-down ms-2"),
                             ],
                             id="toggle-technical-meta",
                             color="link",
@@ -737,7 +883,7 @@ def layout(report_id: str | None = None) -> html.Div:
                         children=meta_technical_metadata_table(document, upload_doc),
                     ),
                     id="technical-meta-collapse",
-                    is_open=True,
+                    is_open=False,
                 ),
                 # Data Variables Table
                 html.H4(
@@ -781,20 +927,35 @@ def toggle_edit_metadata(
     if n_clicks is None:
         return {"display": "none"}, []
 
-    # Toggle display and show form if visible
     if current_style.get("display") == "none":
-        # Show form with current values
         return (
             {"display": "block"},
             [
                 dbc.Form(
                     [
-                        dbc.Label("Name (max 50 characters)"),
+                        dbc.Label("Title (max 100 characters)"),
+                        dbc.Input(
+                            id="edit-meta-title",
+                            type="text",
+                            value=document.get("meta_title", ""),
+                            placeholder="Enter dataset title",
+                            maxLength=100,
+                        ),
+                        html.Small(
+                            (
+                                f"{len(document.get('meta_title', '') or '')} "
+                                f"/ 100 characters"
+                            ),
+                            id="title-char-count",
+                            className="text-muted",
+                            style={"display": "block", "marginBottom": "1rem"},
+                        ),
+                        dbc.Label("Technical Name (max 50 characters)"),
                         dbc.Input(
                             id="edit-meta-name",
                             type="text",
                             value=document.get("meta_name", ""),
-                            placeholder="Enter dataset name",
+                            placeholder="Enter technical dataset name",
                             maxLength=50,
                         ),
                         html.Small(
@@ -834,19 +995,20 @@ def toggle_edit_metadata(
                 )
             ],
         )
-    else:
-        # Hide form
-        return {"display": "none"}, []
+
+    return {"display": "none"}, []
 
 
 # Callback to save the metadata changes
 @callback(
     Output("edit-meta-feedback", "children"),
-    Output("dataset-name", "children"),
-    Output("dataset-description", "children"),
+    Output("dataset-page-title", "children"),
+    Output("dataset-meta-title", "children"),
+    Output("dataset-meta-name", "children"),
     Output("general-info-table-container", "children"),
     Output("current-document-data", "data"),
     Input("save-meta-btn", "n_clicks"),
+    State("edit-meta-title", "value"),
     State("edit-meta-name", "value"),
     State("edit-meta-description", "value"),
     State("current-report-id", "data"),
@@ -854,7 +1016,12 @@ def toggle_edit_metadata(
     prevent_initial_call=True,
 )
 def save_metadata(
-    n_clicks: int, name: str, description: str, report_id: str, document: dict
+    n_clicks: int,
+    title: str,
+    name: str,
+    description: str,
+    report_id: str,
+    document: dict,
 ) -> tuple:
     """Save the edited metadata to the database via API."""
     if n_clicks is None:
@@ -864,13 +1031,25 @@ def save_metadata(
             dash.no_update,
             dash.no_update,
             dash.no_update,
+            dash.no_update,
         )
 
     try:
         # Validate input
+        if not title or not title.strip():
+            return (
+                dbc.Alert("Title cannot be empty", color="warning"),
+                dash.no_update,
+                dash.no_update,
+                dash.no_update,
+                dash.no_update,
+                dash.no_update,
+            )
+
         if not name or not name.strip():
             return (
-                dbc.Alert("Name cannot be empty", color="warning"),
+                dbc.Alert("Technical Name cannot be empty", color="warning"),
+                dash.no_update,
                 dash.no_update,
                 dash.no_update,
                 dash.no_update,
@@ -884,12 +1063,31 @@ def save_metadata(
                 dash.no_update,
                 dash.no_update,
                 dash.no_update,
+                dash.no_update,
             )
 
-        if len(name.strip()) > 50:
+        title_str = title.strip()
+        name_str = name.strip()
+        desc_str = description.strip()
+
+        if len(title_str) > 100:
             return (
                 dbc.Alert(
-                    f"Name is too long ({len(name.strip())} characters). "
+                    f"Title is too long ({len(title_str)} characters). "
+                    f"Maximum 100 characters allowed.",
+                    color="warning",
+                ),
+                dash.no_update,
+                dash.no_update,
+                dash.no_update,
+                dash.no_update,
+                dash.no_update,
+            )
+
+        if len(name_str) > 50:
+            return (
+                dbc.Alert(
+                    f"Technical Name is too long ({len(name_str)} characters). "
                     f"Maximum 50 characters allowed.",
                     color="warning",
                 ),
@@ -897,12 +1095,13 @@ def save_metadata(
                 dash.no_update,
                 dash.no_update,
                 dash.no_update,
+                dash.no_update,
             )
 
-        if len(description.strip()) > 200:
+        if len(desc_str) > 200:
             return (
                 dbc.Alert(
-                    f"Description is too long ({len(description.strip())} characters). "
+                    f"Description is too long ({len(desc_str)} characters). "
                     f"Maximum 200 characters allowed.",
                     color="warning",
                 ),
@@ -910,12 +1109,10 @@ def save_metadata(
                 dash.no_update,
                 dash.no_update,
                 dash.no_update,
+                dash.no_update,
             )
 
-        # SOLUTION: Call database directly instead of using HTTP API
-        # This avoids authentication issues
         try:
-            # Get database manager
             manager = AssasDatabaseManager(
                 database_handler=AssasDatabaseHandler(
                     client=get_mongo_client(app.config["CONNECTIONSTRING"]),
@@ -924,17 +1121,72 @@ def save_metadata(
                 )
             )
 
-            # Prepare update data
+            # Uniqueness validation (case-insensitive exact match) ---
+            # Exclude the current dataset by system_uuid
+            exclude_self = {"system_uuid": {"$ne": str(report_id)}}
+
+            title_re = {"$regex": f"^{re.escape(title_str)}$", "$options": "i"}
+            name_re = {"$regex": f"^{re.escape(name_str)}$", "$options": "i"}
+
+            conflict_title: Dict[str, Any] = (
+                manager.database_handler.file_collection.find_one(
+                    {**exclude_self, "meta_title": title_re},
+                    {"system_uuid": 1, "meta_title": 1, "meta_name": 1},
+                )
+            )
+            conflict_name: Dict[str, Any] = (
+                manager.database_handler.file_collection.find_one(
+                    {**exclude_self, "meta_name": name_re},
+                    {"system_uuid": 1, "meta_title": 1, "meta_name": 1},
+                )
+            )
+
+            if conflict_title or conflict_name:
+                problems: list[str] = []
+
+                if conflict_title:
+                    other_uuid = conflict_title.get("system_uuid")
+                    other_title = conflict_title.get("meta_title")
+                    other_name = conflict_title.get("meta_name")
+                    suffix = f" (Titel: {other_title} Technical Name: {other_name})"
+                    problems.append(
+                        f"Title '{title_str}' is already used by "
+                        f"dataset {other_uuid}.{suffix}"
+                    )
+                    logger.info(f"Title conflict with dataset {other_uuid}.{suffix}")
+
+                if conflict_name:
+                    other_uuid = conflict_name.get("system_uuid")
+                    other_title = conflict_name.get("meta_title")
+                    other_name = conflict_name.get("meta_name")
+                    suffix = f" (Titel: {other_title} Technical Name: {other_name})"
+                    problems.append(
+                        f"Technical Name '{name_str}' is already used by "
+                        f"dataset {other_uuid}.{suffix}"
+                    )
+                    logger.info(
+                        f"Technical Name conflict with dataset {other_uuid}.{suffix}"
+                    )
+
+                return (
+                    dbc.Alert(" ".join(problems), color="warning"),
+                    dash.no_update,
+                    dash.no_update,
+                    dash.no_update,
+                    dash.no_update,
+                    dash.no_update,
+                )
+
             update_data = {
-                "meta_name": name.strip(),
-                "meta_description": description.strip(),
+                "meta_title": title_str,
+                "meta_name": name_str,
+                "meta_description": desc_str,
             }
 
             logger.info(
                 f"Updating dataset {report_id} directly in database with: {update_data}"
             )
 
-            # Perform the update using MongoDB directly
             result = manager.database_handler.file_collection.update_one(
                 {"system_uuid": str(report_id)}, {"$set": update_data}
             )
@@ -945,47 +1197,39 @@ def save_metadata(
             )
 
             if result.matched_count > 0:
-                # Fetch updated document to verify
-                updated_document_db = manager.get_database_entry_by_uuid(str(report_id))
-
-                # Update the serialized document for Dash store
                 updated_document = {
                     **document,
-                    "meta_name": name.strip(),
-                    "meta_description": description.strip(),
+                    "meta_title": title_str,
+                    "meta_name": name_str,
+                    "meta_description": desc_str,
                 }
-
-                logger.info(f"Successfully updated dataset {report_id}")
-                logger.info(
-                    f"Updated values: "
-                    f"name={updated_document_db.get('meta_name')}, "
-                    f"desc={updated_document_db.get('meta_description')}"
-                )
 
                 return (
                     dbc.Alert("Metadata updated successfully!", color="success"),
-                    f"Name: {name.strip()}",
-                    f"Description: {description.strip()}",
+                    dash.no_update,
+                    f"Titel: {title_str}",
+                    f"Technical Name: {name_str}",
                     meta_general_info_table(updated_document),
                     updated_document,
                 )
-            else:
-                logger.error(f"No document matched for dataset {report_id}")
-                return (
-                    dbc.Alert(
-                        "Failed to update dataset - no matching document found",
-                        color="danger",
-                    ),
-                    dash.no_update,
-                    dash.no_update,
-                    dash.no_update,
-                    dash.no_update,
-                )
+
+            return (
+                dbc.Alert(
+                    "Failed to update dataset - no matching document found",
+                    color="danger",
+                ),
+                dash.no_update,
+                dash.no_update,
+                dash.no_update,
+                dash.no_update,
+                dash.no_update,
+            )
 
         except Exception as db_error:
             logger.error(f"Database error: {str(db_error)}", exc_info=True)
             return (
                 dbc.Alert(f"Database error: {str(db_error)}", color="danger"),
+                dash.no_update,
                 dash.no_update,
                 dash.no_update,
                 dash.no_update,
@@ -1000,7 +1244,30 @@ def save_metadata(
             dash.no_update,
             dash.no_update,
             dash.no_update,
+            dash.no_update,
         )
+
+
+@callback(
+    Output("user-info-collapse", "is_open"),
+    Output("toggle-user-info", "children"),
+    Input("toggle-user-info", "n_clicks"),
+    State("user-info-collapse", "is_open"),
+)
+def toggle_user_info(n_clicks: int | None, is_open: bool | None) -> tuple[bool, list]:
+    """Toggle the user information collapse (and sync label on initial load)."""
+    is_open = bool(is_open)
+
+    # Initial page load: just sync the label with current state
+    if n_clicks is None:
+        if is_open:
+            return True, ["Hide", html.I(className="fas fa-chevron-up ms-2")]
+        return False, ["Show", html.I(className="fas fa-chevron-down ms-2")]
+
+    new_open = not is_open
+    if new_open:
+        return True, ["Hide", html.I(className="fas fa-chevron-up ms-2")]
+    return False, ["Show", html.I(className="fas fa-chevron-down ms-2")]
 
 
 @callback(
@@ -1008,14 +1275,21 @@ def save_metadata(
     Output("toggle-upload-info", "children"),
     Input("toggle-upload-info", "n_clicks"),
     State("upload-info-collapse", "is_open"),
-    prevent_initial_call=True,
 )
-def toggle_upload_info(n_clicks: int, is_open: bool) -> tuple[bool, list]:
-    """Toggle the upload information collapse."""
+def toggle_upload_info(n_clicks: int | None, is_open: bool | None) -> tuple[bool, list]:
+    """Toggle the upload information collapse (and sync label on initial load)."""
+    is_open = bool(is_open)
+
+    # Initial page load: just sync the label with current state
+    if n_clicks is None:
+        if is_open:
+            return True, ["Hide", html.I(className="fas fa-chevron-up ms-2")]
+        return False, ["Show", html.I(className="fas fa-chevron-down ms-2")]
+
     new_open = not is_open
     if new_open:
-        return new_open, ["Hide", html.I(className="fas fa-chevron-up ms-2")]
-    return new_open, ["Show", html.I(className="fas fa-chevron-down ms-2")]
+        return True, ["Hide", html.I(className="fas fa-chevron-up ms-2")]
+    return False, ["Show", html.I(className="fas fa-chevron-down ms-2")]
 
 
 @callback(
@@ -1023,11 +1297,20 @@ def toggle_upload_info(n_clicks: int, is_open: bool) -> tuple[bool, list]:
     Output("toggle-technical-meta", "children"),
     Input("toggle-technical-meta", "n_clicks"),
     State("technical-meta-collapse", "is_open"),
-    prevent_initial_call=True,
 )
-def toggle_technical_meta(n_clicks: int, is_open: bool) -> tuple[bool, list]:
-    """Toggle the technical metadata collapse."""
+def toggle_technical_meta(
+    n_clicks: int | None, is_open: bool | None
+) -> tuple[bool, list]:
+    """Toggle the technical metadata collapse (and sync label on initial load)."""
+    is_open = bool(is_open)
+
+    # Initial page load: just sync the label with current state
+    if n_clicks is None:
+        if is_open:
+            return True, ["Hide", html.I(className="fas fa-chevron-up ms-2")]
+        return False, ["Show", html.I(className="fas fa-chevron-down ms-2")]
+
     new_open = not is_open
     if new_open:
-        return new_open, ["Hide", html.I(className="fas fa-chevron-up ms-2")]
-    return new_open, ["Show", html.I(className="fas fa-chevron-down ms-2")]
+        return True, ["Hide", html.I(className="fas fa-chevron-up ms-2")]
+    return False, ["Show", html.I(className="fas fa-chevron-down ms-2")]

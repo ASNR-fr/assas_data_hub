@@ -1176,6 +1176,14 @@ def init_dashboard(server: object) -> object:
     dash_app.clientside_callback(
         """
 function(id) {
+    // Cache DOM references once (fixes "navbar is not defined")
+    const navbar = document.getElementById('main-navbar');
+    const scrollIndicator = document.getElementById('scroll-progress');
+
+    if (!navbar) {
+        return {};
+    }
+
     let lastScrollTop = 0;
 
     function handleScroll() {
