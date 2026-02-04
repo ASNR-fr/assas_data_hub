@@ -2224,6 +2224,29 @@ def layout() -> html.Div:
     return return_div
 
 
+def load_table_data_2():
+    # TODO: replace with your real fetch (db query, API call, etc.)
+    # must return a list of rows (dicts) or whatever your app expects
+    return [{"id": 1}, {"id": 2}]
+
+
+@callback(
+    Output("table_data_store", "data"),
+    Input("reload_page", "n_clicks"),
+    prevent_initial_call=True,
+)
+def reload_table_data(_n: int) -> list[dict]:
+    return load_table_data_2()
+
+
+@callback(
+    Output("dataset_count", "children"),
+    Input("table_data_store", "data"),
+)
+def update_dataset_count(data: list[dict]) -> str:
+    return str(len(data or []))
+
+
 @callback(
     Output("collapse-section", "is_open"),
     Input("toggle-section", "n_clicks"),
