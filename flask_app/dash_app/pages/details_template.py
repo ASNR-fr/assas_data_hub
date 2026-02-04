@@ -10,7 +10,7 @@ import re
 
 from typing import Any, Dict
 from bson import ObjectId
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from uuid import UUID
 from flask import current_app as app
 from dash import html, Input, Output, State, callback, dcc
@@ -26,6 +26,92 @@ from ...auth_utils import get_current_user
 logger = logging.getLogger("assas_app")
 
 dash.register_page(__name__, path_template="/details/<report_id>")
+
+
+def _split_datetime_for_widgets(raw: object) -> tuple[str, str]:
+    """Split datetime (YYYY-MM-DD, HH:MM:SS) for DatePickerSingle."""
+    s = _to_datetime_local_value(raw)  # 'YYYY-MM-DDTHH:MM'
+    if not s or "T" not in s:
+        return "", ""
+    d, t = s.split("T", 1)
+    t = (t or "").strip()
+    if len(t) == 5:  # HH:MM -> HH:MM:SS
+        t = f"{t}:00"
+    return d, (t[:8] if len(t) >= 8 else t)
+
+
+def _combine_date_time(date_value: str | None, time_value: str | None) -> str | None:
+    """Combine date+time into 'YYYY-MM-DDTHH:MM:SS' (or None if incomplete/invalid).
+
+    Accepts HH:MM or HH:MM:SS.
+    """
+    d = (date_value or "").strip()
+    t = (time_value or "").strip()
+    if not d or not t:
+        return None
+    if len(t) == 5:  # HH:MM
+        t = f"{t}:00"
+    if len(t) != 8:
+        return None
+    return f"{d}T{t}"
+
+
+def _parse_user_datetime(value: str | None) -> datetime | None:
+    """Parse user-provided datetime string.
+
+    Accepts:
+      - datetime-local: 'YYYY-MM-DDTHH:MM' or 'YYYY-MM-DDTHH:MM:SS'
+      - ISO:           'YYYY-MM-DDTHH:MM:SS', optionally with 'Z' or offset
+      - Date only:     'YYYY-MM-DD' (treated as midnight)
+
+    Returns a datetime (tz-aware if offset provided), or None if invalid.
+    """
+    if value is None:
+        return None
+    s = str(value).strip()
+    if not s:
+        return None
+
+    # support trailing 'Z'
+    if s.endswith("Z"):
+        s = s[:-1] + "+00:00"
+
+    try:
+        # datetime.fromisoformat supports 'YYYY-MM-DD',
+        # 'YYYY-MM-DDTHH:MM', offsets, etc.
+        return datetime.fromisoformat(s)
+    except Exception:
+        return None
+
+
+def _to_datetime_local_value(raw: object) -> str:
+    """Convert stored values (string/datetime) into a value suitable.
+
+    For <input type="datetime-local"> => 'YYYY-MM-DDTHH:MM'.
+    """
+    if raw is None:
+        return ""
+    if isinstance(raw, datetime):
+        dt = raw
+    else:
+        dt = _parse_user_datetime(str(raw))
+        if dt is None:
+            return ""
+
+    # datetime-local should not include timezone; drop tz if present
+    if dt.tzinfo is not None:
+        dt = dt.astimezone(timezone.utc).replace(tzinfo=None)
+
+    return dt.strftime("%Y-%m-%dT%H:%M")
+
+
+def _created_at_display(document: dict) -> str:
+    corrected = document.get("system_date_corrected")
+    original = document.get("system_date")
+
+    if corrected and original and str(corrected) != str(original):
+        return f"{corrected} (original: {original})"
+    return str(corrected or original or "")
 
 
 def _to_json_safe(value: object) -> object:
@@ -120,6 +206,19 @@ def meta_general_info_table(document: dict) -> dbc.Table:
                         html.Td("Description", style={"width": "30%"}),
                         html.Td(
                             document.get("meta_description", ""),
+                            style={
+                                "width": "70%",
+                                "wordWrap": "break-word",
+                                "whiteSpace": "normal",
+                            },
+                        ),
+                    ]
+                ),
+                html.Tr(
+                    [
+                        html.Td("Created At", style={"width": "30%"}),
+                        html.Td(
+                            _created_at_display(document),
                             style={
                                 "width": "70%",
                                 "wordWrap": "break-word",
@@ -438,7 +537,7 @@ def meta_upload_info_table(upload_doc: dict | None) -> dbc.Table:
                         style={
                             "width": "70%",
                             "wordWrap": "break-word",
-                            "whiteSpace": "pre-wrap",  # keep newlines for archive_paths
+                            "whiteSpace": "pre-wrap",
                         },
                     ),
                 ]
@@ -774,7 +873,7 @@ def layout(report_id: str | None = None) -> html.Div:
                     id="general-info-table-container",
                     children=meta_general_info_table(document),
                 ),
-                # ✅ User Information (expandable, default CLOSED)
+                # User Information (expandable, default CLOSED)
                 html.Div(
                     [
                         html.H4(
@@ -811,7 +910,7 @@ def layout(report_id: str | None = None) -> html.Div:
                     id="user-info-collapse",
                     is_open=False,
                 ),
-                # ✅ Upload Information (expandable, default CLOSED)
+                # Upload Information (expandable, default CLOSED)
                 html.Div(
                     [
                         html.H4(
@@ -848,7 +947,7 @@ def layout(report_id: str | None = None) -> html.Div:
                     id="upload-info-collapse",
                     is_open=False,
                 ),
-                # ✅ Technical Meta Data (expandable, default CLOSED)
+                # Technical Meta Data (expandable, default CLOSED)
                 html.Div(
                     [
                         html.H4(
@@ -928,6 +1027,15 @@ def toggle_edit_metadata(
         return {"display": "none"}, []
 
     if current_style.get("display") == "none":
+        created_at_default = document.get("system_date_corrected") or document.get(
+            "system_date"
+        )
+        created_at_date_default, created_at_time_default = _split_datetime_for_widgets(
+            created_at_default
+        )
+
+        created_at_enabled_default = False
+
         return (
             {"display": "block"},
             [
@@ -984,6 +1092,64 @@ def toggle_edit_metadata(
                             className="text-muted",
                             style={"display": "block", "marginBottom": "1rem"},
                         ),
+                        # Created At correction (OPTIONAL via checkbox) +
+                        # calendar + clock (with seconds)
+                        dbc.Label("Created At (correction)"),
+                        dbc.Checklist(
+                            id="edit-created-at-enabled",
+                            options=[
+                                {
+                                    "label": "Enable Created At correction",
+                                    "value": "enabled",
+                                }
+                            ],
+                            value=[],
+                            switch=True,
+                            className="mb-2",
+                        ),
+                        html.Div(
+                            dbc.Row(
+                                [
+                                    dbc.Col(
+                                        dcc.DatePickerSingle(
+                                            id="edit-created-at-date",
+                                            date=(created_at_date_default or None),
+                                            display_format="YYYY-MM-DD",
+                                            disabled=(not created_at_enabled_default),
+                                        ),
+                                        xs=12,
+                                        md=6,
+                                        className="mb-2 mb-md-0",
+                                    ),
+                                    dbc.Col(
+                                        dbc.Input(
+                                            id="edit-created-at-time",
+                                            type="time",
+                                            step=1,  # seconds precision
+                                            value=(created_at_time_default or ""),
+                                            disabled=(not created_at_enabled_default),
+                                            className="assas-created-at-time",
+                                        ),
+                                        xs=12,
+                                        md=6,
+                                    ),
+                                ],
+                                className="g-2",
+                            ),
+                            className="assas-created-at-picker",
+                        ),
+                        html.Small(
+                            "Optional. If enabled, a valid date/time is "
+                            "required and must not be in the future. "
+                            "Saving will NOT overwrite the original system_date; "
+                            "it is stored separately as system_date_corrected.",
+                            className="text-muted",
+                            style={
+                                "display": "block",
+                                "marginBottom": "1rem",
+                                "marginTop": "0.5rem",
+                            },
+                        ),
                         dbc.Button(
                             "Save Changes",
                             id="save-meta-btn",
@@ -999,7 +1165,39 @@ def toggle_edit_metadata(
     return {"display": "none"}, []
 
 
-# Callback to save the metadata changes
+# CHANGED: enable/disable date+time widgets (replaces the old edit-created-at toggler)
+@callback(
+    Output("edit-created-at-date", "disabled"),
+    Output("edit-created-at-time", "disabled"),
+    Output("edit-created-at-date", "date"),
+    Output("edit-created-at-time", "value"),
+    Input("edit-created-at-enabled", "value"),
+    State("edit-created-at-date", "date"),
+    State("edit-created-at-time", "value"),
+    State("current-document-data", "data"),
+    prevent_initial_call=True,
+)
+def toggle_created_at_input(
+    enabled_value: list[str] | None,
+    current_date: str | None,
+    current_time: str | None,
+    document: dict,
+) -> tuple[bool, bool, str | None, str]:
+    """Enable/disable Created At date+time inputs based on checkbox state."""
+    enabled = bool(enabled_value) and ("enabled" in enabled_value)
+
+    if enabled and (
+        not (current_date or "").strip() or not (current_time or "").strip()
+    ):
+        created_at_default = (document or {}).get("system_date_corrected") or (
+            document or {}
+        ).get("system_date")
+        d, t = _split_datetime_for_widgets(created_at_default)
+        return False, False, (d or None), (t or "")
+
+    return (not enabled), (not enabled), current_date, (current_time or "")
+
+
 @callback(
     Output("edit-meta-feedback", "children"),
     Output("dataset-page-title", "children"),
@@ -1011,6 +1209,9 @@ def toggle_edit_metadata(
     State("edit-meta-title", "value"),
     State("edit-meta-name", "value"),
     State("edit-meta-description", "value"),
+    State("edit-created-at-enabled", "value"),
+    State("edit-created-at-date", "date"),
+    State("edit-created-at-time", "value"),
     State("current-report-id", "data"),
     State("current-document-data", "data"),
     prevent_initial_call=True,
@@ -1020,6 +1221,9 @@ def save_metadata(
     title: str,
     name: str,
     description: str,
+    created_at_enabled_value: list[str] | None,
+    created_at_date: str | None,
+    created_at_time: str | None,
     report_id: str,
     document: dict,
 ) -> tuple:
@@ -1070,106 +1274,20 @@ def save_metadata(
         name_str = name.strip()
         desc_str = description.strip()
 
-        if len(title_str) > 100:
-            return (
-                dbc.Alert(
-                    f"Title is too long ({len(title_str)} characters). "
-                    f"Maximum 100 characters allowed.",
-                    color="warning",
-                ),
-                dash.no_update,
-                dash.no_update,
-                dash.no_update,
-                dash.no_update,
-                dash.no_update,
-            )
+        # Created At correction is OPTIONAL
+        created_at_enabled = bool(created_at_enabled_value) and (
+            "enabled" in created_at_enabled_value
+        )
+        created_at_iso: str | None = None
 
-        if len(name_str) > 50:
-            return (
-                dbc.Alert(
-                    f"Technical Name is too long ({len(name_str)} characters). "
-                    f"Maximum 50 characters allowed.",
-                    color="warning",
-                ),
-                dash.no_update,
-                dash.no_update,
-                dash.no_update,
-                dash.no_update,
-                dash.no_update,
-            )
-
-        if len(desc_str) > 200:
-            return (
-                dbc.Alert(
-                    f"Description is too long ({len(desc_str)} characters). "
-                    f"Maximum 200 characters allowed.",
-                    color="warning",
-                ),
-                dash.no_update,
-                dash.no_update,
-                dash.no_update,
-                dash.no_update,
-                dash.no_update,
-            )
-
-        try:
-            manager = AssasDatabaseManager(
-                database_handler=AssasDatabaseHandler(
-                    client=get_mongo_client(app.config["CONNECTIONSTRING"]),
-                    backup_directory=app.config["BACKUP_DIRECTORY"],
-                    database_name=app.config["MONGO_DB_NAME"],
-                )
-            )
-
-            # Uniqueness validation (case-insensitive exact match) ---
-            # Exclude the current dataset by system_uuid
-            exclude_self = {"system_uuid": {"$ne": str(report_id)}}
-
-            title_re = {"$regex": f"^{re.escape(title_str)}$", "$options": "i"}
-            name_re = {"$regex": f"^{re.escape(name_str)}$", "$options": "i"}
-
-            conflict_title: Dict[str, Any] = (
-                manager.database_handler.file_collection.find_one(
-                    {**exclude_self, "meta_title": title_re},
-                    {"system_uuid": 1, "meta_title": 1, "meta_name": 1},
-                )
-            )
-            conflict_name: Dict[str, Any] = (
-                manager.database_handler.file_collection.find_one(
-                    {**exclude_self, "meta_name": name_re},
-                    {"system_uuid": 1, "meta_title": 1, "meta_name": 1},
-                )
-            )
-
-            if conflict_title or conflict_name:
-                problems: list[str] = []
-
-                if conflict_title:
-                    other_uuid = conflict_title.get("system_uuid")
-                    other_title = conflict_title.get("meta_title")
-                    other_name = conflict_title.get("meta_name")
-                    suffix = f" (Titel: {other_title} Technical Name: {other_name})"
-                    problems.append(
-                        f"Title '{title_str}' is already used by "
-                        f"dataset {other_uuid}.{suffix}"
-                    )
-                    logger.info(f"Title conflict with dataset {other_uuid}.{suffix}")
-
-                if conflict_name:
-                    other_uuid = conflict_name.get("system_uuid")
-                    other_title = conflict_name.get("meta_title")
-                    other_name = conflict_name.get("meta_name")
-                    suffix = f" (Titel: {other_title} Technical Name: {other_name})"
-                    problems.append(
-                        f"Technical Name '{name_str}' is already used by "
-                        f"dataset {other_uuid}.{suffix}"
-                    )
-                    logger.info(
-                        f"Technical Name conflict with dataset {other_uuid}.{suffix}"
-                    )
-
+        if created_at_enabled:
+            combined = _combine_date_time(created_at_date, created_at_time)
+            if not combined:
                 return (
-                    dbc.Alert(" ".join(problems), color="warning"),
+                    dbc.Alert(
+                        "Created At is required when enabled (select date and time).",
+                        color="warning",
+                    ),
                     dash.no_update,
                     dash.no_update,
                     dash.no_update,
@@ -1177,64 +1295,155 @@ def save_metadata(
                     dash.no_update,
                 )
 
-            update_data = {
+            created_at_dt = _parse_user_datetime(combined)
+            if created_at_dt is None:
+                return (
+                    dbc.Alert("Created At is invalid.", color="warning"),
+                    dash.no_update,
+                    dash.no_update,
+                    dash.no_update,
+                    dash.no_update,
+                    dash.no_update,
+                )
+
+            now = (
+                datetime.now(timezone.utc)
+                if created_at_dt.tzinfo is not None
+                else datetime.now()
+            )
+            if created_at_dt > now:
+                return (
+                    dbc.Alert("Created At cannot be in the future.", color="warning"),
+                    dash.no_update,
+                    dash.no_update,
+                    dash.no_update,
+                    dash.no_update,
+                    dash.no_update,
+                )
+
+            created_at_iso = created_at_dt.isoformat()
+
+        manager = AssasDatabaseManager(
+            database_handler=AssasDatabaseHandler(
+                client=get_mongo_client(app.config["CONNECTIONSTRING"]),
+                backup_directory=app.config["BACKUP_DIRECTORY"],
+                database_name=app.config["MONGO_DB_NAME"],
+            )
+        )
+
+        # Uniqueness validation (case-insensitive exact match) ---
+        # Exclude the current dataset by system_uuid
+        exclude_self = {"system_uuid": {"$ne": str(report_id)}}
+
+        title_re = {"$regex": f"^{re.escape(title_str)}$", "$options": "i"}
+        name_re = {"$regex": f"^{re.escape(name_str)}$", "$options": "i"}
+
+        conflict_title: Dict[str, Any] = (
+            manager.database_handler.file_collection.find_one(
+                {**exclude_self, "meta_title": title_re},
+                {"system_uuid": 1, "meta_title": 1, "meta_name": 1},
+            )
+        )
+        conflict_name: Dict[str, Any] = (
+            manager.database_handler.file_collection.find_one(
+                {**exclude_self, "meta_name": name_re},
+                {"system_uuid": 1, "meta_title": 1, "meta_name": 1},
+            )
+        )
+
+        if conflict_title or conflict_name:
+            problems: list[str] = []
+
+            if conflict_title:
+                other_uuid = conflict_title.get("system_uuid")
+                other_title = conflict_title.get("meta_title")
+                other_name = conflict_title.get("meta_name")
+                suffix = f" (Titel: {other_title} Technical Name: {other_name})"
+                problems.append(
+                    f"Title '{title_str}' is already used by "
+                    f"dataset {other_uuid}.{suffix}"
+                )
+                logger.info(f"Title conflict with dataset {other_uuid}.{suffix}")
+
+            if conflict_name:
+                other_uuid = conflict_name.get("system_uuid")
+                other_title = conflict_name.get("meta_title")
+                other_name = conflict_name.get("meta_name")
+                suffix = f" (Titel: {other_title} Technical Name: {other_name})"
+                problems.append(
+                    f"Technical Name '{name_str}' is already used by "
+                    f"dataset {other_uuid}.{suffix}"
+                )
+                logger.info(
+                    f"Technical Name conflict with dataset {other_uuid}.{suffix}"
+                )
+
+            return (
+                dbc.Alert(" ".join(problems), color="warning"),
+                dash.no_update,
+                dash.no_update,
+                dash.no_update,
+                dash.no_update,
+                dash.no_update,
+            )
+
+        update_data = {
+            "meta_title": title_str,
+            "meta_name": name_str,
+            "meta_description": desc_str,
+        }
+        if created_at_enabled and created_at_iso:
+            update_data["system_date_corrected"] = created_at_iso
+
+        logger.info(
+            f"Updating dataset {report_id} directly in database with: {update_data}"
+        )
+
+        result = manager.database_handler.file_collection.update_one(
+            {"system_uuid": str(report_id)}, {"$set": update_data}
+        )
+
+        if result.matched_count > 0:
+            updated_document = {
+                **document,
                 "meta_title": title_str,
                 "meta_name": name_str,
                 "meta_description": desc_str,
             }
-
-            logger.info(
-                f"Updating dataset {report_id} directly in database with: {update_data}"
-            )
-
-            result = manager.database_handler.file_collection.update_one(
-                {"system_uuid": str(report_id)}, {"$set": update_data}
-            )
-
-            logger.info(
-                f"MongoDB update result: "
-                f"matched={result.matched_count}, modified={result.modified_count}"
-            )
-
-            if result.matched_count > 0:
-                updated_document = {
-                    **document,
-                    "meta_title": title_str,
-                    "meta_name": name_str,
-                    "meta_description": desc_str,
-                }
-
-                return (
-                    dbc.Alert("Metadata updated successfully!", color="success"),
-                    dash.no_update,
-                    f"Titel: {title_str}",
-                    f"Technical Name: {name_str}",
-                    meta_general_info_table(updated_document),
-                    updated_document,
-                )
+            if created_at_enabled and created_at_iso:
+                updated_document["system_date_corrected"] = created_at_iso
 
             return (
-                dbc.Alert(
-                    "Failed to update dataset - no matching document found",
-                    color="danger",
-                ),
+                dbc.Alert("Metadata updated successfully!", color="success"),
                 dash.no_update,
-                dash.no_update,
-                dash.no_update,
-                dash.no_update,
-                dash.no_update,
+                f"Titel: {title_str}",
+                f"Technical Name: {name_str}",
+                meta_general_info_table(updated_document),
+                updated_document,
             )
 
-        except Exception as db_error:
-            logger.error(f"Database error: {str(db_error)}", exc_info=True)
-            return (
-                dbc.Alert(f"Database error: {str(db_error)}", color="danger"),
-                dash.no_update,
-                dash.no_update,
-                dash.no_update,
-                dash.no_update,
-                dash.no_update,
-            )
+        return (
+            dbc.Alert(
+                "Failed to update dataset - no matching document found",
+                color="danger",
+            ),
+            dash.no_update,
+            dash.no_update,
+            dash.no_update,
+            dash.no_update,
+            dash.no_update,
+        )
+
+    except Exception as db_error:
+        logger.error(f"Database error: {str(db_error)}", exc_info=True)
+        return (
+            dbc.Alert(f"Database error: {str(db_error)}", color="danger"),
+            dash.no_update,
+            dash.no_update,
+            dash.no_update,
+            dash.no_update,
+            dash.no_update,
+        )
 
     except Exception as e:
         logger.error(f"Error updating metadata: {str(e)}", exc_info=True)
