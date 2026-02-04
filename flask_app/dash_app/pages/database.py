@@ -89,6 +89,22 @@ _TABLE_STRINGIFY_COLUMNS = {
     "system_user_info",
 }
 
+_SORTABLE_COLUMNS = {
+    "system_index",
+    "meta_name",
+    "system_status",
+    "system_date",
+    "system_user",
+    "system_size",
+    "system_size_hdf5",
+    "system_number_of_samples",
+    "system_number_of_samples_completed",
+    "system_uuid",
+    "system_upload_uuid",
+}
+
+_FILTERABLE_COLUMNS = set(_SORTABLE_COLUMNS)
+
 
 def _build_database_manager() -> AssasDatabaseManager:
     return AssasDatabaseManager(
@@ -108,6 +124,11 @@ def _clean_table_dataframe(df: pd.DataFrame) -> pd.DataFrame:
     df_clean = df.copy()
 
     for col in df_clean.columns:
+        
+        if col.endswith("_uuid"):
+            df_clean[col] = df_clean[col].apply(lambda x: str(x) if x is not None else "")
+            continue
+        
         if col in _TABLE_STRINGIFY_COLUMNS:
             df_clean[col] = \
                 df_clean[col].apply(lambda x: str(x) if x is not None else "")
@@ -240,12 +261,159 @@ def _ensure_sort_helpers(df: pd.DataFrame) -> pd.DataFrame:
     if "system_size_hdf5" in out.columns:
         out["system_size_hdf5_bytes"] = out["system_size_hdf5"].apply(_parse_size_to_bytes)
 
+    # Samples as numeric for sorting/filtering (even if stored as strings)
+    if "system_number_of_samples" in out.columns:
+        out["system_number_of_samples_num"] = pd.to_numeric(out["system_number_of_samples"], errors="coerce")
+    if "system_number_of_samples_completed" in out.columns:
+        out["system_number_of_samples_completed_num"] = pd.to_numeric(
+            out["system_number_of_samples_completed"], errors="coerce"
+        )
+
     # Name sort should use visible label (not the <a href=...> markup)
     if "meta_name" in out.columns:
         out["meta_name_sort"] = out["meta_name"].apply(_extract_anchor_text)
 
+    # NEW: UUID helpers (string + lowercase) for stable sorting/filtering
+    if "system_uuid" in out.columns:
+        out["system_uuid_sort"] = out["system_uuid"].astype(str).fillna("").str.lower()
+    if "system_upload_uuid" in out.columns:
+        out["system_upload_uuid_sort"] = out["system_upload_uuid"].astype(str).fillna("").str.lower()
+
     return out
 
+def split_filter_part(filter_part: str) -> List[str]:
+    """Split a filter part into name, operator, and value.
+
+    Args:
+        filter_part (str): The filter part to split, e.g., "{name} contains 'value'".
+
+    Returns:
+        List[str]: A list containing the name, operator, and value.
+            If no operator is found, returns [None, None, None].
+
+    """
+    logger.info(f"Operators: {operators}")
+    logger.info(f"Filter part: {filter_part}")
+
+    for operator_type in operators:
+        for operator in operator_type:
+            if operator in filter_part:
+                name_part, value_part = filter_part.split(operator, 1)
+                name = name_part[name_part.find("{") + 1 : name_part.rfind("}")]
+
+                value_part = value_part.strip()
+                v0 = value_part[0]
+
+                if v0 == value_part[-1] and v0 in (""", """, "`"):
+                    value = value_part[1:-1].replace("\\" + v0, v0)
+                else:
+                    try:
+                        value = float(value_part)
+                    except ValueError:
+                        value = value_part
+
+                # word operators need spaces after them in the filter string,
+                # but we don't want these later
+                return name, operator_type[0].strip(), value
+
+    return [None] * 3
+
+
+def apply_filters(dataframe: pd.DataFrame, filter_query: str) -> pd.DataFrame:
+    """Apply filters to the dataframe based on filter query."""
+    if not filter_query:
+        return dataframe
+
+    dataframe = _ensure_sort_helpers(dataframe)
+    filtering_expressions = filter_query.split(" && ")
+
+    for filter_part in filtering_expressions:
+        col_name, operator, filter_value = split_filter_part(filter_part)
+        if col_name is None or operator is None:
+            continue
+
+        # NEW: disable filtering for non-allowed (including most hidden) columns
+        if col_name not in _FILTERABLE_COLUMNS:
+            continue
+
+        try:
+            col_series = dataframe[col_name] if col_name in dataframe.columns else None
+
+            if col_name == "system_uuid" and "system_uuid_sort" in dataframe.columns:
+                col_series = dataframe["system_uuid_sort"]
+                filter_value = str(filter_value).strip().lower()
+
+            if col_name == "system_upload_uuid" and "system_upload_uuid_sort" in dataframe.columns:
+                col_series = dataframe["system_upload_uuid_sort"]
+                filter_value = str(filter_value).strip().lower()
+
+            if col_name == "system_date" and "system_date_sort" in dataframe.columns:
+                col_series = dataframe["system_date_sort"]
+                filter_dt = pd.to_datetime(filter_value, errors="coerce", utc=True)
+                if pd.isna(filter_dt):
+                    continue
+                filter_value = filter_dt
+
+            if col_name == "system_size" and "system_size_bytes" in dataframe.columns:
+                col_series = dataframe["system_size_bytes"]
+                filter_value = _parse_size_to_bytes(filter_value)
+                if filter_value is None:
+                    continue
+
+            if col_name == "system_size_hdf5" and "system_size_hdf5_bytes" in dataframe.columns:
+                col_series = dataframe["system_size_hdf5_bytes"]
+                filter_value = _parse_size_to_bytes(filter_value)
+                if filter_value is None:
+                    continue
+
+            if col_name == "system_number_of_samples" and "system_number_of_samples_num" in dataframe.columns:
+                col_series = dataframe["system_number_of_samples_num"]
+                filter_value = pd.to_numeric(filter_value, errors="coerce")
+                if pd.isna(filter_value):
+                    continue
+
+            if col_name == "system_number_of_samples_completed" and "system_number_of_samples_completed_num" in dataframe.columns:
+                col_series = dataframe["system_number_of_samples_completed_num"]
+                filter_value = pd.to_numeric(filter_value, errors="coerce")
+                if pd.isna(filter_value):
+                    continue
+
+            if col_name == "meta_name" and "meta_name_sort" in dataframe.columns and operator in ("contains", "eq", "ne"):
+                col_series = dataframe["meta_name_sort"]
+
+            if col_series is None:
+                continue
+
+            if operator == "eq":
+                dataframe = dataframe.loc[col_series == filter_value]
+            elif operator == "ne":
+                dataframe = dataframe.loc[col_series != filter_value]
+            elif operator == "lt":
+                dataframe = dataframe.loc[col_series < filter_value]
+            elif operator == "le":
+                dataframe = dataframe.loc[col_series <= filter_value]
+            elif operator == "gt":
+                dataframe = dataframe.loc[col_series > filter_value]
+            elif operator == "ge":
+                dataframe = dataframe.loc[col_series >= filter_value]
+            elif operator == "contains":
+                dataframe = dataframe.loc[
+                    col_series.astype(str).str.contains(
+                        str(filter_value), 
+                        case=False,
+                        na=False
+                        )
+                    ]
+            elif operator == "datestartswith":
+                dataframe = dataframe.loc[
+                    col_series.astype(str).str.startswith(str(filter_value))
+                    ]
+
+        except Exception as e:
+            logger.warning(f"Error applying filter {filter_part}: {e}")
+            continue
+
+    return dataframe
 
 def update_table_data() -> pd.DataFrame:
     """Update the table data from the database (table-optimized snapshot)."""
@@ -1221,11 +1389,12 @@ def layout() -> html.Div:
                                                                                                         },
                                                                                                     ),
                                                                                                     html.Td(
-                                                                                                        "0 B",
+                                                                                                        "100 TB",
                                                                                                         className="text-end",
                                                                                                         style={
                                                                                                             "fontSize": "clamp(0.7rem, 1.8vw, 0.8rem)"
                                                                                                         },
+                                                                                                        id="storage_used",
                                                                                                     ),
                                                                                                 ]
                                                                                             ),
@@ -1239,7 +1408,7 @@ def layout() -> html.Div:
                                                                                                         },
                                                                                                     ),
                                                                                                     html.Td(
-                                                                                                        "100 TB",
+                                                                                                        "200 TB",
                                                                                                         className="text-end",
                                                                                                         style={
                                                                                                             "fontSize": "clamp(0.7rem, 1.8vw, 0.8rem)"
@@ -1755,6 +1924,7 @@ def layout() -> html.Div:
                                                                         "deletable": False,
                                                                         "renamable": False,
                                                                         "hideable": False,
+                                                                        "sortable": False,
                                                                     },
                                                                     {
                                                                         "name": "System UUID",
@@ -1765,6 +1935,7 @@ def layout() -> html.Div:
                                                                         "renamable": False,
                                                                         "hideable": True,
                                                                         "hidden": True,
+                                                                        "sortable": True,
                                                                     },
                                                                     {
                                                                         "name": "Upload UUID",
@@ -1775,6 +1946,7 @@ def layout() -> html.Div:
                                                                         "renamable": False,
                                                                         "hideable": True,
                                                                         "hidden": True,
+                                                                        "sortable": True,
                                                                     },
                                                                     {
                                                                         "name": "System Path",
@@ -1785,6 +1957,7 @@ def layout() -> html.Div:
                                                                         "renamable": False,
                                                                         "hideable": True,
                                                                         "hidden": True,
+                                                                        "sortable": False,
                                                                     },
                                                                     {
                                                                         "name": "System Result",
@@ -1795,6 +1968,7 @@ def layout() -> html.Div:
                                                                         "renamable": False,
                                                                         "hideable": True,
                                                                         "hidden": True,
+                                                                        "sortable": False,
                                                                     },
                                                                     {
                                                                         "name": "Samples",
@@ -1805,6 +1979,7 @@ def layout() -> html.Div:
                                                                         "renamable": False,
                                                                         "hideable": True,
                                                                         "hidden": True,
+                                                                        "sortable": True,
                                                                     },
                                                                     {
                                                                         "name": "Completed Samples",
@@ -1815,6 +1990,7 @@ def layout() -> html.Div:
                                                                         "renamable": False,
                                                                         "hideable": True,
                                                                         "hidden": True,
+                                                                        "sortable": True,
                                                                     },
                                                                 ],
                                                                 data=[],
@@ -1975,6 +2151,18 @@ def layout() -> html.Div:
                                                                     {
                                                                         "selector": ".dash-table-container table",
                                                                         "rule": "min-width: 800px !important;",
+                                                                    },
+                                                                    {
+                                                                        "selector": 'th[data-dash-column="system_download"] .column-header--sort,'
+                                                                                    'th[data-dash-column="system_path"] .column-header--sort,'
+                                                                                    'th[data-dash-column="system_result"] .column-header--sort',
+                                                                        "rule": "display: none !important;",
+                                                                    },
+                                                                    {
+                                                                        "selector": 'th[data-dash-column="system_download"],'
+                                                                                    'th[data-dash-column="system_path"],'
+                                                                                    'th[data-dash-column="system_result"]',
+                                                                        "rule": "cursor: default !important;",
                                                                     },
                                                                 ],
                                                             )
@@ -2238,115 +2426,6 @@ def start_download(clicks: int, rows: List, ids: List, data: List) -> tuple:
         return True, "No rows selected for download.", no_href_link
 
 
-def split_filter_part(filter_part: str) -> List[str]:
-    """Split a filter part into name, operator, and value.
-
-    Args:
-        filter_part (str): The filter part to split, e.g., "{name} contains 'value'".
-
-    Returns:
-        List[str]: A list containing the name, operator, and value.
-            If no operator is found, returns [None, None, None].
-
-    """
-    logger.info(f"Operators: {operators}")
-    logger.info(f"Filter part: {filter_part}")
-
-    for operator_type in operators:
-        for operator in operator_type:
-            if operator in filter_part:
-                name_part, value_part = filter_part.split(operator, 1)
-                name = name_part[name_part.find("{") + 1 : name_part.rfind("}")]
-
-                value_part = value_part.strip()
-                v0 = value_part[0]
-
-                if v0 == value_part[-1] and v0 in (""", """, "`"):
-                    value = value_part[1:-1].replace("\\" + v0, v0)
-                else:
-                    try:
-                        value = float(value_part)
-                    except ValueError:
-                        value = value_part
-
-                # word operators need spaces after them in the filter string,
-                # but we don't want these later
-                return name, operator_type[0].strip(), value
-
-    return [None] * 3
-
-
-def apply_filters(dataframe: pd.DataFrame, filter_query: str) -> pd.DataFrame:
-    """Apply filters to the dataframe based on filter query."""
-    if not filter_query:
-        return dataframe
-
-    # make sure helper cols exist (important when called from export too)
-    dataframe = _ensure_sort_helpers(dataframe)
-
-    filtering_expressions = filter_query.split(" && ")
-
-    for filter_part in filtering_expressions:
-        col_name, operator, filter_value = split_filter_part(filter_part)
-        if col_name is None or operator is None:
-            continue
-
-        try:
-            # Map displayed columns to helper columns where needed
-            col_series = dataframe[col_name] if col_name in dataframe.columns else None
-
-            if col_name == "system_date" and "system_date_sort" in dataframe.columns:
-                col_series = dataframe["system_date_sort"]
-                # Parse filter value into datetime if possible
-                filter_dt = pd.to_datetime(filter_value, errors="coerce", utc=True)
-                if pd.isna(filter_dt):
-                    continue
-                filter_value = filter_dt
-
-            if col_name == "system_size" and "system_size_bytes" in dataframe.columns:
-                col_series = dataframe["system_size_bytes"]
-                filter_value = _parse_size_to_bytes(filter_value)
-                if filter_value is None:
-                    continue
-
-            if col_name == "system_size_hdf5" and "system_size_hdf5_bytes" in dataframe.columns:
-                col_series = dataframe["system_size_hdf5_bytes"]
-                filter_value = _parse_size_to_bytes(filter_value)
-                if filter_value is None:
-                    continue
-
-            if col_name == "meta_name" and "meta_name_sort" in dataframe.columns and operator in ("contains", "eq", "ne"):
-                col_series = dataframe["meta_name_sort"]
-
-            if col_series is None:
-                continue
-
-            if operator == "eq":
-                dataframe = dataframe.loc[col_series == filter_value]
-            elif operator == "ne":
-                dataframe = dataframe.loc[col_series != filter_value]
-            elif operator == "lt":
-                dataframe = dataframe.loc[col_series < filter_value]
-            elif operator == "le":
-                dataframe = dataframe.loc[col_series <= filter_value]
-            elif operator == "gt":
-                dataframe = dataframe.loc[col_series > filter_value]
-            elif operator == "ge":
-                dataframe = dataframe.loc[col_series >= filter_value]
-            elif operator == "contains":
-                dataframe = dataframe.loc[
-                    col_series.astype(str).str.contains(str(filter_value), case=False, na=False)
-                ]
-            elif operator == "datestartswith":
-                dataframe = dataframe.loc[col_series.astype(str).str.startswith(str(filter_value))]
-
-        except Exception as e:
-            logger.warning(f"Error applying filter {filter_part}: {e}")
-            continue
-
-    return dataframe
-
-
 @callback(
     [
         Output("datatable-paging-and-sorting", "data"),
@@ -2400,21 +2479,28 @@ def update_table_with_pagination(
     if filter_query:
         dataframe = apply_filters(dataframe, filter_query)
 
-    # Apply sorting (use helper columns)
     sort_map = {
         "system_date": "system_date_sort",
         "system_size": "system_size_bytes",
         "system_size_hdf5": "system_size_hdf5_bytes",
         "meta_name": "meta_name_sort",
+        "system_number_of_samples": "system_number_of_samples_num",
+        "system_number_of_samples_completed": "system_number_of_samples_completed_num",
+        "system_uuid": "system_uuid_sort",
+        "system_upload_uuid": "system_upload_uuid_sort",
     }
 
-    # Apply sorting
     if sort_by:
         try:
             sort_cols: list[str] = []
             ascending: list[bool] = []
             for s in sort_by:
                 col_id = s.get("column_id")
+
+                # NEW: disable sorting for non-allowed (including most hidden) columns
+                if col_id not in _SORTABLE_COLUMNS:
+                    continue
+
                 sort_col = sort_map.get(col_id, col_id)
                 if sort_col in dataframe.columns:
                     sort_cols.append(sort_col)
@@ -2665,16 +2751,38 @@ def prepare_export_data(filter_query, sort_by, export_options, reload_nonce: int
     """Prepare data for export with filters and sorting applied."""
     try:
         df = _get_table_data(reload_nonce)
+        df = _ensure_sort_helpers(df)
 
         if "apply_filters" in (export_options or []) and filter_query:
             df = apply_filters(df, filter_query)
 
+        # NEW: keep export sorting consistent with UI sorting + restrictions
+        sort_map = {
+            "system_date": "system_date_sort",
+            "system_size": "system_size_bytes",
+            "system_size_hdf5": "system_size_hdf5_bytes",
+            "meta_name": "meta_name_sort",
+            "system_number_of_samples": "system_number_of_samples_num",
+            "system_number_of_samples_completed": \
+                "system_number_of_samples_completed_num",
+            "system_uuid": "system_uuid_sort",
+            "system_upload_uuid": "system_upload_uuid_sort",
+        }
+
         if sort_by and len(sort_by) > 0:
-            df = df.sort_values(
-                [col["column_id"] for col in sort_by],
-                ascending=[col["direction"] == "asc" for col in sort_by],
-                inplace=False,
-            )
+            sort_cols = []
+            ascending = []
+            for col in sort_by:
+                col_id = col.get("column_id")
+                if col_id not in _SORTABLE_COLUMNS:
+                    continue
+                sort_cols.append(sort_map.get(col_id, col_id))
+                ascending.append(col.get("direction") == "asc")
+
+            sort_cols = [c for c in sort_cols if c in df.columns]
+            if sort_cols:
+                df = df.sort_values(
+                    sort_cols, ascending=ascending[: len(sort_cols)], inplace=False)
 
         return df
     except Exception as e:

@@ -263,6 +263,95 @@ If a request fails, the API returns a JSON object with `success: false` and an `
 
 ---
 
+## Tools
+
+### Update dataset attributes (CLI)
+
+A small command-line tool is provided to update dataset metadata (title, name, description) via the REST API:
+
+- Script: `tools/assas_update_dataset_attributes.py`
+- Auth: Uses the same cookie-session authentication as `tools/assas_data_downloader.py` (`POST /auth/basic/login`)
+- Requires curator/admin permissions.
+
+#### Usage
+
+```bash
+cd /root/assas-data-hub-dev
+
+# Optional: configure via environment variables
+export ASSAS_USERNAME="your_user"
+export ASSAS_PASSWORD="your_password"
+export ASSAS_BASE_PATH="/test/assas_app"   # deployment prefix (example)
+
+python tools/assas_update_dataset_attributes.py \
+  --base-url "https://assas.scc.kit.edu" \
+  --dataset-id "123e4567-e89b-12d3-a456-426614174000" \
+  --title "New title" \
+  --name "new_technical_name" \
+  --description "New description"
+```
+
+If your environment uses a self-signed certificate, you can disable SSL verification:
+
+```bash
+python tools/assas_update_dataset_attributes.py \
+  --base-url "https://assas.scc.kit.edu" \
+  --dataset-id "123e4567-e89b-12d3-a456-426614174000" \
+  --title "New title" \
+  --name "new_technical_name" \
+  --description "New description" \
+  --no-verify-ssl
+```
+
+#### Return codes
+
+The tool prints the HTTP response and exits with a code suitable for scripting:
+
+- `0` success (2xx)
+- `3` authentication/permission error (401/403)
+- `4` endpoint not found (404)
+- `5` conflict (409), e.g. duplicate `meta_title` or `meta_name`
+- `1` other error
+
+## Editing dataset metadata in the GUI
+
+Users with the appropriate role (**curator** or **admin**) can edit dataset metadata directly in the web interface.
+
+1. Open the **Database View**.
+2. Select a dataset and open the **dataset details** page (click on the dataset name).
+3. Click **Edit** (or the metadata edit action) and update:
+   - **Title** (`meta_title`)
+   - **Name** (`meta_name`)
+   - **Description** (`meta_description`)
+4. Save the changes.
+
+### Manual (step-by-step) workflow
+
+1. **Find the dataset**
+   - Go to **Database view**
+   - Use the search/filter box to narrow down by dataset **name**, **status**, or **user**
+   - Click the dataset **Name** to open the details page
+
+2. **Edit metadata**
+   - On the details page, locate the **Metadata** section
+   - Click **Edit** to enable the input fields
+   - Enter the new values for title/name/description
+
+3. **Validate and save**
+   - Ensure **Name** (`meta_name`) and **Title** (`meta_title`) are not already used by another dataset
+   - Click **Save**
+   - Wait for the confirmation message (the update is written to MongoDB and the underlying NetCDF4 file)
+
+4. **Verify the change**
+   - Return to the **Database view**
+   - Refresh/reload the page if needed
+   - Confirm the updated **Name** and **Description** are visible
+
+Notes:
+- The GUI uses the REST endpoint `POST /datasets/<uuid>/attributes`.
+- `meta_title` and `meta_name` must be **unique** across datasets (the server returns `409 Conflict` if duplicates are detected).
+- Updating metadata changes both the MongoDB entry and the underlying NetCDF4 file attributes (to keep them in sync).
+
 <div align="center">
     <a href="http://www.kit.edu/english/index.php"><img src="./flask_app/dash_app/assets/kit_logo.drawio.svg" height="100px" hspace="3%" vspace="25px"></a>
 </div>
