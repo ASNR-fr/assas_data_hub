@@ -2,6 +2,7 @@
 
 import logging
 import uuid
+import re  # <-- add
 import numpy as np
 import netCDF4 as nc
 from datetime import datetime, timezone
@@ -1172,6 +1173,7 @@ def update_dataset_attributes(dataset_id: uuid.UUID) -> Response:
         if not data:
             return APIResponse.error("No data provided", 400)
 
+        meta_title = data.get("meta_title")  # Optional, not used currently
         meta_name = data.get("meta_name")
         meta_description = data.get("meta_description")
 
@@ -1179,7 +1181,15 @@ def update_dataset_attributes(dataset_id: uuid.UUID) -> Response:
             f"Received update request for dataset {dataset_id} with data: {data}"
         )
 
-        # Validate input
+        # Validate required fields
+
+        if (
+            meta_title is None
+            or not isinstance(meta_title, str)
+            or not meta_title.strip()
+        ):
+            return APIResponse.error("meta_title is required and cannot be empty", 400)
+
         if meta_name is None or not isinstance(meta_name, str) or not meta_name.strip():
             return APIResponse.error("meta_name is required and cannot be empty", 400)
 
@@ -1193,6 +1203,16 @@ def update_dataset_attributes(dataset_id: uuid.UUID) -> Response:
             )
 
         # Validate length
+
+        if len(meta_title.strip()) > 50:
+            return APIResponse.error(
+                (
+                    f"meta_title is too long ({len(meta_title.strip())} characters). "
+                    "Maximum 50 characters allowed."
+                ),
+                400,
+            )
+
         if len(meta_name.strip()) > 50:
             return APIResponse.error(
                 (
@@ -1225,9 +1245,70 @@ def update_dataset_attributes(dataset_id: uuid.UUID) -> Response:
 
         # Prepare update data
         update_data = {
+            "meta_title": meta_title.strip(),
             "meta_name": meta_name.strip(),
             "meta_description": meta_description.strip(),
         }
+
+        # NEW: Uniqueness restrictions for meta_title and meta_name (exclude self)
+        try:
+            exclude_self = {"system_uuid": {"$ne": dataset_id_str}}
+
+            title_re = {
+                "$regex": f"^{re.escape(update_data['meta_title'])}$",
+                "$options": "i",
+            }
+            name_re = {
+                "$regex": f"^{re.escape(update_data['meta_name'])}$",
+                "$options": "i",
+            }
+
+            projection = {"system_uuid": 1, "meta_title": 1, "meta_name": 1}
+
+            conflict_title = manager.database_handler.file_collection.find_one(
+                {**exclude_self, "meta_title": title_re},
+                projection,
+            )
+            conflict_name = manager.database_handler.file_collection.find_one(
+                {**exclude_self, "meta_name": name_re},
+                projection,
+            )
+
+            if conflict_title or conflict_name:
+                problems: list[str] = []
+
+                if conflict_title:
+                    other_uuid = conflict_title.get("system_uuid")
+                    other_name = conflict_title.get("meta_name")
+                    suffix = f" (meta_name: {other_name})" if other_name else ""
+                    problems.append(
+                        f"meta_title '{update_data['meta_title']}' "
+                        f"is already used by dataset {other_uuid}.{suffix}"
+                    )
+
+                if conflict_name:
+                    other_uuid = conflict_name.get("system_uuid")
+                    other_title = conflict_name.get("meta_title")
+                    suffix = f" (meta_title: {other_title})" if other_title else ""
+                    problems.append(
+                        f"meta_name '{update_data['meta_name']}' "
+                        f"is already used by dataset {other_uuid}.{suffix}"
+                    )
+
+                logger.warning(
+                    f"Uniqueness constraint violation for dataset "
+                    f"{dataset_id_str}: {'; '.join(problems)}"
+                )
+
+                return APIResponse.error(" ".join(problems), 409)
+
+        except Exception as db_check_error:
+            logger.error(
+                f"Failed to validate uniqueness for dataset "
+                f"{dataset_id_str}: {db_check_error}.",
+                exc_info=True,
+            )
+            return APIResponse.error("Failed to validate uniqueness constraints", 500)
 
         logger.info(f"Updating dataset {dataset_id_str} with data: {update_data}")
 
@@ -1236,7 +1317,8 @@ def update_dataset_attributes(dataset_id: uuid.UUID) -> Response:
             try:
                 with nc.Dataset(result_filepath, "a") as ncfile:
                     # Update global attributes
-                    ncfile.title = meta_name.strip()
+                    ncfile.title = meta_title.strip()
+                    ncfile.technical_name = meta_name.strip()
                     ncfile.description = meta_description.strip()
                     # Add timestamp of last modification
                     ncfile.last_modified = datetime.now(timezone.utc).isoformat()

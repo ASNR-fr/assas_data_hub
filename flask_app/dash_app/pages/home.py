@@ -162,18 +162,10 @@ _HOME_PROJECTION_EXCLUDE = {
 
 def get_storage_size_binary(dataframe: DataFrame) -> str:
     """Calculate total binary storage size from the dataframe."""
-    if (
-        dataframe is None
-        or dataframe.empty
-        or "system_size_binary" not in dataframe.columns
-    ):
+    if dataframe is None or dataframe.empty or "system_size" not in dataframe.columns:
         return "0 B"
 
-    size = (
-        dataframe["system_size_binary"]
-        .apply(AssasDatabaseManager.convert_to_bytes)
-        .sum()
-    )
+    size = dataframe["system_size"].apply(AssasDatabaseManager.convert_to_bytes).sum()
     size = AssasDatabaseManager.convert_from_bytes(size)
     return size or "0 B"
 
@@ -187,11 +179,11 @@ def get_storage_size_hdf5(dataframe: DataFrame) -> str:
     ):
         return "0 B"
 
-    dataframes = dataframe.copy()
-    dataframes["system_size_hdf5_bytes"] = dataframes["system_size_hdf5"].apply(
+    dataframe = dataframe.copy()
+    dataframe["system_size_hdf5_bytes"] = dataframe["system_size_hdf5"].apply(
         AssasDatabaseManager.convert_to_bytes
     )
-    total_size_bytes = dataframes["system_size_hdf5_bytes"].sum()
+    total_size_bytes = dataframe["system_size_hdf5_bytes"].sum()
     total_size = AssasDatabaseManager.convert_from_bytes(total_size_bytes)
     return total_size or "0 B"
 
@@ -205,11 +197,11 @@ def get_avg_astec_vars_per_dataset(dataframe: DataFrame) -> int:
     ):
         return 0
 
-    dataframes = dataframe.copy()
-    dataframes["num_astec_variables"] = dataframes["meta_data_variables"].apply(
+    dataframe = dataframe.copy()
+    dataframe["num_astec_variables"] = dataframe["meta_data_variables"].apply(
         lambda x: len(x) if isinstance(x, list) else 0
     )
-    mean_val = dataframes["num_astec_variables"].mean()
+    mean_val = dataframe["num_astec_variables"].mean()
     return int(mean_val) if mean_val == mean_val else 0  # NaN-safe
 
 
@@ -228,7 +220,7 @@ def layout() -> html.Div:
 
         # For home stats you likely want ALL docs,
         # but keep config-driven limit if needed.
-        limit = int(app.config.get("HOME_STATS_LIMIT", 10))
+        limit = int(app.config.get("HOME_STATS_LIMIT", 2000))
         batch_size = int(app.config.get("DATABASE_TABLE_BATCH_SIZE", 100))
         max_time_ms = int(app.config.get("DATABASE_TABLE_MAX_TIME_MS", 12000))
 

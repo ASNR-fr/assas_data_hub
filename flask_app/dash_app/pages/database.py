@@ -161,6 +161,92 @@ def _add_table_presentation_columns(dataframe: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
+def _extract_anchor_text(value: object) -> str:
+    """Extract visible text from an HTML anchor (<a>text</a>) or return str(value)."""
+    if value is None:
+        return ""
+    s = str(value)
+    m = re.search(r">([^<]+)<", s)
+    return (m.group(1) if m else s).strip()
+
+
+def _parse_size_to_bytes(value: object) -> int | None:
+    """Parse sizes like '10 MB', '1.2 GB', '12345' into bytes.
+
+    Returns None if unknown."""
+    if value is None:
+        return None
+    if isinstance(value, (int, float)) and not pd.isna(value):
+        return int(value)
+
+    s = str(value).strip().lower()
+    if not s:
+        return None
+
+    # normalize common variants
+    s = s.replace("bytes", "b").replace("byte", "b")
+    s = s.replace(" ", "")
+
+    m = re.match(r"^([0-9]+(?:\.[0-9]+)?)?([a-z]{0,3})$", s)
+    if not m:
+        return None
+
+    num_str, unit = m.group(1), (m.group(2) or "b")
+    if not num_str:
+        return None
+
+    num = float(num_str)
+
+    mult = {
+        "b": 1,
+        "kb": 1024,
+        "kib": 1024,
+        "mb": 1024**2,
+        "mib": 1024**2,
+        "gb": 1024**3,
+        "gib": 1024**3,
+        "tb": 1024**4,
+        "tib": 1024**4,
+        "pb": 1024**5,
+        "pib": 1024**5,
+        # tolerate short units
+        "k": 1024,
+        "m": 1024**2,
+        "g": 1024**3,
+        "t": 1024**4,
+        "p": 1024**5,
+    }.get(unit)
+
+    if mult is None:
+        return None
+
+    return int(num * mult)
+
+
+def _ensure_sort_helpers(df: pd.DataFrame) -> pd.DataFrame:
+    """Add helper columns used for correct sorting/filtering."""
+    if df.empty:
+        return df
+
+    out = df.copy()
+
+    # Date as datetime for sorting/filtering
+    if "system_date" in out.columns:
+        out["system_date_sort"] = pd.to_datetime(out["system_date"], errors="coerce", utc=True)
+
+    # Size as bytes for sorting/filtering
+    if "system_size" in out.columns:
+        out["system_size_bytes"] = out["system_size"].apply(_parse_size_to_bytes)
+    if "system_size_hdf5" in out.columns:
+        out["system_size_hdf5_bytes"] = out["system_size_hdf5"].apply(_parse_size_to_bytes)
+
+    # Name sort should use visible label (not the <a href=...> markup)
+    if "meta_name" in out.columns:
+        out["meta_name_sort"] = out["meta_name"].apply(_extract_anchor_text)
+
+    return out
+
+
 def update_table_data() -> pd.DataFrame:
     """Update the table data from the database (table-optimized snapshot)."""
     logger.info("Load database entries to table.")
@@ -2151,89 +2237,6 @@ def start_download(clicks: int, rows: List, ids: List, data: List) -> tuple:
         logger.info(f"Disabled is True, Selected rows: {rows}, ids: {ids}")
         return True, "No rows selected for download.", no_href_link
 
-
-def _extract_anchor_text(value: object) -> str:
-    """Extract visible text from an HTML anchor (<a>text</a>) or return str(value)."""
-    if value is None:
-        return ""
-    s = str(value)
-    m = re.search(r">([^<]+)<", s)
-    return (m.group(1) if m else s).strip()
-
-def _parse_size_to_bytes(value: object) -> int | None:
-    """Parse sizes like '10 MB', '1.2 GB', '12345' into bytes.
-
-    Returns None if unknown."""
-    if value is None:
-        return None
-    if isinstance(value, (int, float)) and not pd.isna(value):
-        return int(value)
-
-    s = str(value).strip().lower()
-    if not s:
-        return None
-
-    # normalize common variants
-    s = s.replace("bytes", "b").replace("byte", "b")
-    s = s.replace(" ", "")
-
-    m = re.match(r"^([0-9]+(?:\.[0-9]+)?)?([a-z]{0,3})$", s)
-    if not m:
-        return None
-
-    num_str, unit = m.group(1), (m.group(2) or "b")
-    if not num_str:
-        return None
-
-    num = float(num_str)
-
-    mult = {
-        "b": 1,
-        "kb": 1024,
-        "kib": 1024,
-        "mb": 1024**2,
-        "mib": 1024**2,
-        "gb": 1024**3,
-        "gib": 1024**3,
-        "tb": 1024**4,
-        "tib": 1024**4,
-        "pb": 1024**5,
-        "pib": 1024**5,
-        # tolerate short units
-        "k": 1024,
-        "m": 1024**2,
-        "g": 1024**3,
-        "t": 1024**4,
-        "p": 1024**5,
-    }.get(unit)
-
-    if mult is None:
-        return None
-
-    return int(num * mult)
-
-def _ensure_sort_helpers(df: pd.DataFrame) -> pd.DataFrame:
-    """Add helper columns used for correct sorting/filtering."""
-    if df.empty:
-        return df
-
-    out = df.copy()
-
-    # Date as datetime for sorting/filtering
-    if "system_date" in out.columns:
-        out["system_date_sort"] = pd.to_datetime(out["system_date"], errors="coerce", utc=True)
-
-    # Size as bytes for sorting/filtering
-    if "system_size" in out.columns:
-        out["system_size_bytes"] = out["system_size"].apply(_parse_size_to_bytes)
-    if "system_size_hdf5" in out.columns:
-        out["system_size_hdf5_bytes"] = out["system_size_hdf5"].apply(_parse_size_to_bytes)
-
-    # Name sort should use visible label (not the <a href=...> markup)
-    if "meta_name" in out.columns:
-        out["meta_name_sort"] = out["meta_name"].apply(_extract_anchor_text)
-
-    return out
 
 def split_filter_part(filter_part: str) -> List[str]:
     """Split a filter part into name, operator, and value.
