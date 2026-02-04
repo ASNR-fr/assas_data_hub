@@ -229,7 +229,7 @@ def layout() -> html.Div:
         # For home stats you likely want ALL docs,
         # but keep config-driven limit if needed.
         limit = int(app.config.get("HOME_STATS_LIMIT", 10))
-        batch_size = int(app.config.get("DATABASE_TABLE_BATCH_SIZE", 500))
+        batch_size = int(app.config.get("DATABASE_TABLE_BATCH_SIZE", 100))
         max_time_ms = int(app.config.get("DATABASE_TABLE_MAX_TIME_MS", 12000))
 
         dataframe = database_manager.get_all_database_entries_safe(

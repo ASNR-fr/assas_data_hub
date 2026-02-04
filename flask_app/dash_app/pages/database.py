@@ -6,6 +6,7 @@ dataset index.
 """
 
 import os
+import re
 import dash
 import dash_bootstrap_components as dbc
 import pandas as pd
@@ -127,12 +128,12 @@ def _status_to_html(status: str) -> str:
     return f'<span class="{css_class}">{str(status)}</span>'
 
 
-def _add_table_presentation_columns(df: pd.DataFrame) -> pd.DataFrame:
+def _add_table_presentation_columns(dataframe: pd.DataFrame) -> pd.DataFrame:
     """Add link/HTML columns used by the DataTable."""
-    if df.empty:
-        return df
+    if dataframe.empty:
+        return dataframe
 
-    out = df.copy()
+    out = dataframe.copy()
 
     download_url = f"{get_base_url()}/files/download/"
     details_url = f"{get_base_url()}/details/"
@@ -170,16 +171,17 @@ def update_table_data() -> pd.DataFrame:
         batch_size = int(app.config.get("DATABASE_TABLE_BATCH_SIZE", 100))
         max_time_ms = int(app.config.get("DATABASE_TABLE_MAX_TIME_MS", 12000))
 
-        df = database_manager.get_all_database_entries_safe(
+        dataframe = database_manager.get_all_database_entries_safe(
             projection=_TABLE_PROJECTION_EXCLUDE,
             limit=limit,
             batch_size=batch_size,
             max_time_ms=max_time_ms,
         )
 
-        df = _clean_table_dataframe(df)
-        df = _add_table_presentation_columns(df)
-        return df
+        dataframe = _clean_table_dataframe(dataframe)
+        dataframe = _add_table_presentation_columns(dataframe)
+        dataframe = _ensure_sort_helpers(dataframe)
+        return dataframe
 
     except Exception:
         # Critical: don't crash the worker/service due to a transient DB timeout
@@ -2150,6 +2152,89 @@ def start_download(clicks: int, rows: List, ids: List, data: List) -> tuple:
         return True, "No rows selected for download.", no_href_link
 
 
+def _extract_anchor_text(value: object) -> str:
+    """Extract visible text from an HTML anchor (<a>text</a>) or return str(value)."""
+    if value is None:
+        return ""
+    s = str(value)
+    m = re.search(r">([^<]+)<", s)
+    return (m.group(1) if m else s).strip()
+
+def _parse_size_to_bytes(value: object) -> int | None:
+    """Parse sizes like '10 MB', '1.2 GB', '12345' into bytes.
+
+    Returns None if unknown."""
+    if value is None:
+        return None
+    if isinstance(value, (int, float)) and not pd.isna(value):
+        return int(value)
+
+    s = str(value).strip().lower()
+    if not s:
+        return None
+
+    # normalize common variants
+    s = s.replace("bytes", "b").replace("byte", "b")
+    s = s.replace(" ", "")
+
+    m = re.match(r"^([0-9]+(?:\.[0-9]+)?)?([a-z]{0,3})$", s)
+    if not m:
+        return None
+
+    num_str, unit = m.group(1), (m.group(2) or "b")
+    if not num_str:
+        return None
+
+    num = float(num_str)
+
+    mult = {
+        "b": 1,
+        "kb": 1024,
+        "kib": 1024,
+        "mb": 1024**2,
+        "mib": 1024**2,
+        "gb": 1024**3,
+        "gib": 1024**3,
+        "tb": 1024**4,
+        "tib": 1024**4,
+        "pb": 1024**5,
+        "pib": 1024**5,
+        # tolerate short units
+        "k": 1024,
+        "m": 1024**2,
+        "g": 1024**3,
+        "t": 1024**4,
+        "p": 1024**5,
+    }.get(unit)
+
+    if mult is None:
+        return None
+
+    return int(num * mult)
+
+def _ensure_sort_helpers(df: pd.DataFrame) -> pd.DataFrame:
+    """Add helper columns used for correct sorting/filtering."""
+    if df.empty:
+        return df
+
+    out = df.copy()
+
+    # Date as datetime for sorting/filtering
+    if "system_date" in out.columns:
+        out["system_date_sort"] = pd.to_datetime(out["system_date"], errors="coerce", utc=True)
+
+    # Size as bytes for sorting/filtering
+    if "system_size" in out.columns:
+        out["system_size_bytes"] = out["system_size"].apply(_parse_size_to_bytes)
+    if "system_size_hdf5" in out.columns:
+        out["system_size_hdf5_bytes"] = out["system_size_hdf5"].apply(_parse_size_to_bytes)
+
+    # Name sort should use visible label (not the <a href=...> markup)
+    if "meta_name" in out.columns:
+        out["meta_name_sort"] = out["meta_name"].apply(_extract_anchor_text)
+
+    return out
+
 def split_filter_part(filter_part: str) -> List[str]:
     """Split a filter part into name, operator, and value.
 
@@ -2189,55 +2274,69 @@ def split_filter_part(filter_part: str) -> List[str]:
 
 
 def apply_filters(dataframe: pd.DataFrame, filter_query: str) -> pd.DataFrame:
-    """Apply filters to the dataframe based on filter query.
-
-    Args:
-        dataframe (pd.DataFrame): The dataframe to filter
-        filter_query (str): The filter query string
-
-    Returns:
-        pd.DataFrame: Filtered dataframe
-
-    """
+    """Apply filters to the dataframe based on filter query."""
     if not filter_query:
         return dataframe
+
+    # make sure helper cols exist (important when called from export too)
+    dataframe = _ensure_sort_helpers(dataframe)
 
     filtering_expressions = filter_query.split(" && ")
 
     for filter_part in filtering_expressions:
         col_name, operator, filter_value = split_filter_part(filter_part)
-
         if col_name is None or operator is None:
             continue
 
         try:
+            # Map displayed columns to helper columns where needed
+            col_series = dataframe[col_name] if col_name in dataframe.columns else None
+
+            if col_name == "system_date" and "system_date_sort" in dataframe.columns:
+                col_series = dataframe["system_date_sort"]
+                # Parse filter value into datetime if possible
+                filter_dt = pd.to_datetime(filter_value, errors="coerce", utc=True)
+                if pd.isna(filter_dt):
+                    continue
+                filter_value = filter_dt
+
+            if col_name == "system_size" and "system_size_bytes" in dataframe.columns:
+                col_series = dataframe["system_size_bytes"]
+                filter_value = _parse_size_to_bytes(filter_value)
+                if filter_value is None:
+                    continue
+
+            if col_name == "system_size_hdf5" and "system_size_hdf5_bytes" in dataframe.columns:
+                col_series = dataframe["system_size_hdf5_bytes"]
+                filter_value = _parse_size_to_bytes(filter_value)
+                if filter_value is None:
+                    continue
+
+            if col_name == "meta_name" and "meta_name_sort" in dataframe.columns and operator in ("contains", "eq", "ne"):
+                col_series = dataframe["meta_name_sort"]
+
+            if col_series is None:
+                continue
+
             if operator == "eq":
-                dataframe = dataframe.loc[dataframe[col_name] == filter_value]
+                dataframe = dataframe.loc[col_series == filter_value]
             elif operator == "ne":
-                dataframe = dataframe.loc[dataframe[col_name] != filter_value]
+                dataframe = dataframe.loc[col_series != filter_value]
             elif operator == "lt":
-                dataframe = dataframe.loc[dataframe[col_name] < filter_value]
+                dataframe = dataframe.loc[col_series < filter_value]
             elif operator == "le":
-                dataframe = dataframe.loc[dataframe[col_name] <= filter_value]
+                dataframe = dataframe.loc[col_series <= filter_value]
             elif operator == "gt":
-                dataframe = dataframe.loc[dataframe[col_name] > filter_value]
+                dataframe = dataframe.loc[col_series > filter_value]
             elif operator == "ge":
-                dataframe = dataframe.loc[dataframe[col_name] >= filter_value]
+                dataframe = dataframe.loc[col_series >= filter_value]
             elif operator == "contains":
-                if col_name in dataframe.columns:
-                    # Convert to string for contains operation
-                    dataframe = dataframe.loc[
-                        dataframe[col_name]
-                        .astype(str)
-                        .str.contains(str(filter_value), case=False, na=False)
-                    ]
+                dataframe = dataframe.loc[
+                    col_series.astype(str).str.contains(str(filter_value), case=False, na=False)
+                ]
             elif operator == "datestartswith":
-                if col_name in dataframe.columns:
-                    dataframe = dataframe.loc[
-                        dataframe[col_name]
-                        .astype(str)
-                        .str.startswith(str(filter_value))
-                    ]
+                dataframe = dataframe.loc[col_series.astype(str).str.startswith(str(filter_value))]
+
         except Exception as e:
             logger.warning(f"Error applying filter {filter_part}: {e}")
             continue
@@ -2291,24 +2390,40 @@ def update_table_with_pagination(
 
     # Get fresh data (especially important after refresh)
     dataframe = _get_table_data(n_clicks)
-    logger.info(f"Loaded {len(dataframe)} records from database")
+    dataframe = _ensure_sort_helpers(dataframe)
+    logger.info(f"Loaded {len(dataframe)} records from database.")
 
     # Apply filtering using enhanced function
     if filter_query:
-        logger.info(f"Applying filter: {filter_query}")
         dataframe = apply_filters(dataframe, filter_query)
-        logger.info(f"After filtering: {len(dataframe)} records")
+
+    # Apply sorting (use helper columns)
+    sort_map = {
+        "system_date": "system_date_sort",
+        "system_size": "system_size_bytes",
+        "system_size_hdf5": "system_size_hdf5_bytes",
+        "meta_name": "meta_name_sort",
+    }
 
     # Apply sorting
-    if len(sort_by):
-        logger.info(f"Applying sort: {sort_by}")
+    if sort_by:
         try:
-            dataframe = dataframe.sort_values(
-                [col["column_id"] for col in sort_by],
-                ascending=[col["direction"] == "asc" for col in sort_by],
-                inplace=False,
-            )
-            logger.info("Sorting applied successfully")
+            sort_cols: list[str] = []
+            ascending: list[bool] = []
+            for s in sort_by:
+                col_id = s.get("column_id")
+                sort_col = sort_map.get(col_id, col_id)
+                if sort_col in dataframe.columns:
+                    sort_cols.append(sort_col)
+                    ascending.append(s.get("direction") == "asc")
+
+            if sort_cols:
+                dataframe = dataframe.sort_values(
+                    sort_cols,
+                    ascending=ascending,
+                    inplace=False,
+                    na_position="last",
+                )
         except Exception as e:
             logger.warning(f"Error applying sort: {e}")
 
@@ -2713,10 +2828,10 @@ def export_csv(
     current_page_data: List[dict],
     all_data: List[dict],
     filter_query: str,
-    sort_by,
-    export_options,
-    reload_nonce,
-):
+    sort_by: List[dict],
+    export_options: List[str],
+    reload_nonce: int,
+) -> Tuple[dict | None, str]:
     logger.info("CSV export initiated.")
     if not n_clicks:
         raise PreventUpdate
@@ -2754,6 +2869,32 @@ def export_csv(
         logger.error(f"CSV export error: {e}")
         return dash.no_update, f"❌ Export failed: {str(e)}"
 
+def _make_excel_safe(df: pd.DataFrame) -> pd.DataFrame:
+    """Excel can't handle timezone-aware datetimes. Convert them to tz-naive."""
+    if df.empty:
+        return df
+
+    out = df.copy()
+
+    for col in out.columns:
+        s = out[col]
+
+        # tz-aware datetime dtype (e.g. datetime64[ns, UTC])
+        if pd.api.types.is_datetime64tz_dtype(s):
+            out[col] = s.dt.tz_convert(None)
+            continue
+
+        # object columns might contain tz-aware pd.Timestamp objects
+        if pd.api.types.is_object_dtype(s):
+
+            def _strip_tz(v: object) -> object:
+                if isinstance(v, pd.Timestamp) and v.tz is not None:
+                    return v.tz_convert(None)
+                return v
+
+            out[col] = s.map(_strip_tz)
+
+    return out
 
 @callback(
     [
@@ -2772,14 +2913,14 @@ def export_csv(
     prevent_initial_call=True,
 )
 def export_excel(
-    n_clicks,
-    current_page_data,
-    all_data,
-    filter_query,
-    sort_by,
-    export_options,
-    reload_nonce,
-):
+    n_clicks: int,
+    current_page_data: List[dict],
+    all_data: List[dict],
+    filter_query: str,
+    sort_by: List[dict],
+    export_options: List[str],
+    reload_nonce: int,
+) -> Tuple[dict | None, str]:
     logger.info("Excel export initiated.")
     if not n_clicks:
         raise PreventUpdate
@@ -2789,12 +2930,13 @@ def export_excel(
 
         if "current_page" in export_options:
             export_data = current_page_data or []
-            status_msg = f"✅ Exported {len(export_data)} records (current page) to Excel"
+            status_msg = \
+                f"✅ Exported {len(export_data)} records (current page) to Excel"
         else:
-            df = prepare_export_data(
+            dataframe = prepare_export_data(
                 filter_query, sort_by, export_options, reload_nonce=reload_nonce
             )
-            export_data = df.to_dict("records")
+            export_data = dataframe.to_dict("records")
             status_msg = f"✅ Exported {len(export_data)} records to Excel"
 
         if not export_data:
@@ -2802,6 +2944,7 @@ def export_excel(
 
         df_export = pd.DataFrame(export_data)
         df_export = clean_data_for_export(df_export, export_options)
+        df_export = _make_excel_safe(df_export)
 
         timestamp = pd.Timestamp.now().strftime("%Y%m%d_%H%M%S")
         filename = f"assas_database_export_{timestamp}.xlsx"
