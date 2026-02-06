@@ -78,7 +78,7 @@ _TABLE_PROJECTION_EXCLUDE = {
     "system_user_info": 0,
     "upload_info": 0,
     "system_imported_from": 0,
-    "meta_description": 0,
+    # "meta_description": 0,
 }
 
 # DataFrame columns that should be forced into a DataTable-friendly representation
@@ -1992,6 +1992,28 @@ def layout() -> html.Div:
                                                                         "hidden": True,
                                                                         "sortable": True,
                                                                     },
+                                                                    {
+                                                                        "name": "Description",
+                                                                        "id": "description",
+                                                                        "selectable": True,
+                                                                        "type": "text",
+                                                                        "deletable": False,
+                                                                        "renamable": False,
+                                                                        "hideable": True,
+                                                                        "hidden": True,
+                                                                        "sortable": False,
+                                                                    },
+                                                                    {
+                                                                        "name": "Meta Description",
+                                                                        "id": "meta_description",
+                                                                        "selectable": True,
+                                                                        "type": "text",
+                                                                        "deletable": False,
+                                                                        "renamable": False,
+                                                                        "hideable": True,
+                                                                        "hidden": True,
+                                                                        "sortable": False,
+                                                                    },
                                                                 ],
                                                                 data=[],
                                                                 # ENABLE SORTING AND FILTERING
@@ -2004,6 +2026,8 @@ def layout() -> html.Div:
                                                                     "system_result",
                                                                     "system_number_of_samples",
                                                                     "system_number_of_samples_completed",
+                                                                    "description",
+                                                                    "meta_description",
                                                                 ],
                                                                 sort_action="custom",
                                                                 sort_mode="multi",
@@ -2153,13 +2177,17 @@ def layout() -> html.Div:
                                                                         "rule": "min-width: 800px !important;",
                                                                     },
                                                                     {
-                                                                        "selector": 'th[data-dash-column="system_download"] .column-header--sort,'
+                                                                        "selector": 'th[data-dash-column="description"] .column-header--sort,'
+                                                                                    'th[data-dash-column="meta_description"] .column-header--sort,'
+                                                                                    'th[data-dash-column="system_download"] .column-header--sort,'
                                                                                     'th[data-dash-column="system_path"] .column-header--sort,'
                                                                                     'th[data-dash-column="system_result"] .column-header--sort',
                                                                         "rule": "display: none !important;",
                                                                     },
                                                                     {
-                                                                        "selector": 'th[data-dash-column="system_download"],'
+                                                                        "selector": 'th[data-dash-column="description"],'
+                                                                                    'th[data-dash-column="meta_description"],'
+                                                                                    'th[data-dash-column="system_download"],'
                                                                                     'th[data-dash-column="system_path"],'
                                                                                     'th[data-dash-column="system_result"]',
                                                                         "rule": "cursor: default !important;",
@@ -2859,6 +2887,8 @@ def clean_data_for_export(df, export_options):
             "system_size_hdf5": "HDF5 Size",
             "system_download": "Download Status",
             "system_uuid": "UUID",
+            "description": "Description",
+            "meta_description": "Meta Description",
         }
 
         # Rename columns that exist in the dataframe
