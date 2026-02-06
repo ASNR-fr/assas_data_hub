@@ -49,6 +49,7 @@ The ASSAS Data Hub is a web application to store and visualize ASTEC simulation 
 - [Prequisites](#prequisites)
 - [Installation](#installation)
 - [Upload of ASTEC Data](#upload-of-astec-data)
+- [Profile](#profile)
 - [Database View](#database-view)
 - [Tools](#tools)
 - [RESTful API](#restful-api)
@@ -340,6 +341,8 @@ The use of the upload application requires the following:
 
 ## Database View
 
+The database can be inspected under **Database page:** https://assas.scc.kit.edu/assas_app/database/.
+
 The database view displays a list with all available datasets and provides the following parameters:
 
 * ``Index``: Unique index of dataset
@@ -378,6 +381,14 @@ The following meta information is extracted during the upload and conversion pro
 * Channels: Number of ectracted channels
 * Meshes: Number of extracted meshes
 * Samples: Number of extracted samples
+
+## Profile
+
+Some parts of the ASSAS Data Hub may require authentication (login).
+
+* **Database page:** https://assas.scc.kit.edu/assas_app/database/
+* **Login:** https://assas.scc.kit.edu/auth/basic/login (API endpoint used by tools; if your deployment provides a GUI login page, use that URL instead)
+* **Contact:** `/assas_app/contact` (adjust if your deployment uses a different contact URL)
 
 ## Tools
 
