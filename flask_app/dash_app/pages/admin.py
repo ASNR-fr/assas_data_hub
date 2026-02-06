@@ -12,9 +12,12 @@ import plotly.express as px
 import pandas as pd
 import io
 import base64
+import json
+import re
 
 from dash import html, dcc, callback, Input, Output, State, dash_table, ctx
-from datetime import datetime
+from dash.exceptions import PreventUpdate
+from datetime import datetime, timezone
 from typing import List, Dict, Any, Optional, Tuple, Union
 from werkzeug.security import generate_password_hash
 
@@ -22,6 +25,145 @@ from ...auth_utils import get_current_user, require_role
 from ...database.user_manager import UserManager
 
 logger = logging.getLogger("assas_app")
+
+_EDITABLE_COLS = {
+    "username",
+    "email",
+    "name",
+    "roles",
+    "is_active",
+    "institute",
+    "batch",
+}
+_PROTECTED_COLS = {"_id", "id", "provider", "created_at", "last_login", "login_count"}
+
+_DEFAULT_VISIBLE_COLS = {
+    "username",
+    "email",
+    "name",
+    "provider",
+    "roles",
+    "is_active",
+    "institute",
+    "batch",
+    "last_login",
+    "login_count",
+    "created_at",
+}
+
+_SENSITIVE_KEY_RE = re.compile(r"password|secret|token|api[_-]?key|hash", re.IGNORECASE)
+
+
+def _safe_cell_value(v: object) -> object:
+    """Convert complex types to string for safe display in table cells."""
+    if v is None or isinstance(v, (str, int, float, bool)):
+        return v
+    if isinstance(v, (dict, list)):
+        try:
+            return json.dumps(v, ensure_ascii=False)
+        except Exception:
+            return str(v)
+    return str(v)
+
+
+def _parse_roles(v: object) -> List[str]:
+    """Accept 'admin, visitor' or ['admin','visitor'] -> list[str]."""
+    if v is None:
+        return ["visitor"]
+    if isinstance(v, list):
+        out = [str(x).strip() for x in v if str(x).strip()]
+        return out or ["visitor"]
+    if isinstance(v, str):
+        parts = [p.strip() for p in v.split(",")]
+        out = [p for p in parts if p]
+        return out or ["visitor"]
+    return ["visitor"]
+
+
+def _parse_is_active(v: object) -> bool:
+    """Accept True/False, ✓/✗, 'true'/'false'."""
+    if isinstance(v, bool):
+        return v
+    if isinstance(v, (int, float)):
+        return bool(v)
+    if isinstance(v, str):
+        s = v.strip().lower()
+        if s in {"✓", "true", "1", "yes", "y", "on"}:
+            return True
+        if s in {"✗", "false", "0", "no", "n", "off"}:
+            return False
+    # default to True to avoid accidental lockouts from bad input
+    return True
+
+
+def _sanitize_patch(curr: Dict[str, Any], prev: Dict[str, Any]) -> Dict[str, Any]:
+    """Build a safe update dict from an edited row."""
+    patch: Dict[str, Any] = {}
+
+    for k in _EDITABLE_COLS:
+        if k not in curr:
+            continue
+        if curr.get(k) == prev.get(k):
+            continue
+
+        if k == "email":
+            patch["email"] = (curr.get("email") or "").strip().lower()
+        elif k == "username":
+            patch["username"] = (curr.get("username") or "").strip()
+        elif k == "roles":
+            patch["roles"] = _parse_roles(curr.get("roles"))
+        elif k == "is_active":
+            patch["is_active"] = _parse_is_active(curr.get("is_active"))
+        elif k == "institute":
+            patch["institute"] = (curr.get("institute") or "").strip()
+        elif k == "batch":
+            patch["batch"] = (curr.get("batch") or "").strip()
+        else:
+            patch[k] = curr.get(k)
+
+    # defense-in-depth
+    for k in list(patch.keys()):
+        if k in _PROTECTED_COLS:
+            patch.pop(k, None)
+
+    return patch
+
+
+def _validate_custom_field_name(name: str) -> Optional[str]:
+    """Validate a custom field name for user properties."""
+    if not name or not isinstance(name, str):
+        return "Property name is required."
+    n = name.strip()
+
+    # Prevent MongoDB operator / path injection
+    if n.startswith("$") or "." in n:
+        return "Property name cannot start with '$' or contain '.'."
+
+    if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", n):
+        return "Property name must match: [A-Za-z_][A-Za-z0-9_]*"
+
+    if n in _PROTECTED_COLS:
+        return f"Property name '{n}' is not allowed."
+
+    return None
+
+
+def _parse_custom_value(raw: object, typ: str) -> object:
+    if typ == "string":
+        return "" if raw is None else str(raw)
+    if typ == "number":
+        if raw is None or str(raw).strip() == "":
+            return None
+        s = str(raw).strip()
+        return float(s) if "." in s else int(s)
+    if typ == "boolean":
+        return _parse_is_active(raw)
+    if typ == "json":
+        if raw is None or str(raw).strip() == "":
+            return None
+        return json.loads(raw)
+    return raw
+
 
 # Admin styling
 ADMIN_CARD_STYLE = {
@@ -47,7 +189,7 @@ def get_user_stats() -> Dict[str, Any]:
         user_manager = UserManager()
         all_users = user_manager.get_all_users()
 
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
 
         stats = {
             "total_users": len(all_users),
@@ -59,7 +201,7 @@ def get_user_stats() -> Dict[str, Any]:
             "admin_users": 0,
             "researcher_users": 0,
             "curator_users": 0,
-            "viewer_users": 0,
+            "visitor_users": 0,
             "recent_logins_24h": 0,
             "recent_logins_7d": 0,
             "recent_logins_30d": 0,
@@ -198,6 +340,34 @@ def get_users_data() -> List[Dict]:
         user_manager = UserManager()
         all_users = user_manager.get_all_users()
 
+        # Include custom properties as additional columns (hideable in UI).
+        base_cols = {
+            "id",
+            "_id",
+            "username",
+            "email",
+            "name",
+            "provider",
+            "roles",
+            "is_active",
+            "institute",
+            "batch",
+            "last_login",
+            "created_at",
+            "login_count",
+        }
+
+        extra_keys: set[str] = set()
+        for u in all_users:
+            for k in (u or {}).keys():
+                if k in base_cols or k in _PROTECTED_COLS:
+                    continue
+                if k.startswith("_"):
+                    continue
+                if _SENSITIVE_KEY_RE.search(k):
+                    continue
+                extra_keys.add(k)
+
         users_data = []
         for user in all_users:
             try:
@@ -290,21 +460,31 @@ def get_users_data() -> List[Dict]:
                     else "Unknown"
                 )
 
-                users_data.append(
-                    {
-                        "id": str(user.get("_id", "")),
-                        "username": user.get("username", ""),
-                        "email": user.get("email", ""),
-                        "name": user.get("name", ""),
-                        "provider": auth_methods_str,
-                        "roles": roles_str,
-                        "is_active": "✓" if user.get("is_active", True) else "✗",
-                        "last_login": last_login_str,
-                        "created_at": created_str,
-                        "login_count": user.get("login_count", 0),
-                        "institute": user.get("institute", ""),
-                    }
-                )
+                user_id = str(user.get("_id", ""))
+
+                row: Dict[str, Any] = {
+                    # Keep existing "id" AND provide "_id" (hidden) for updates
+                    "id": user_id,
+                    "_id": user_id,
+                    "username": user.get("username", ""),
+                    "email": user.get("email", ""),
+                    "name": user.get("name", ""),
+                    "provider": auth_methods_str,
+                    "roles": roles_str,
+                    # Keep ✓/✗ so existing styling keeps working,
+                    # but it is editable via dropdown now
+                    "is_active": "✓" if user.get("is_active", True) else "✗",
+                    "institute": user.get("institute", ""),
+                    "batch": user.get("batch", ""),
+                    "last_login": last_login_str,
+                    "created_at": created_str,
+                    "login_count": user.get("login_count", 0),
+                }
+
+                for k in extra_keys:
+                    row[k] = _safe_cell_value(user.get(k))
+
+                users_data.append(row)
 
             except Exception as e:
                 logger.error(
@@ -1378,30 +1558,116 @@ def layout() -> html.Div:
             html.Div(id="selection-info", className="mb-3"),
             # Existing export status
             html.Div(id="export-status", className="mb-3"),
-            # UPDATED User Table with Selection
+            # Store a "last saved" snapshot so we can diff inline edits safely
+            dcc.Store(id="users-table-original", data=users_data),
+            # UPDATED User Table with Selection + Editing
             dash_table.DataTable(
                 id="users-table",
                 columns=[
-                    {"name": "Username", "id": "username", "type": "text"},
-                    {"name": "Email", "id": "email", "type": "text"},
-                    {"name": "Name", "id": "name", "type": "text"},
-                    {"name": "Auth Method", "id": "provider", "type": "text"},
-                    {"name": "Roles", "id": "roles", "type": "text"},
-                    {"name": "Active", "id": "is_active", "type": "text"},
-                    {"name": "Institute", "id": "institute", "type": "text"},
-                    {"name": "Last Login", "id": "last_login", "type": "text"},
-                    {"name": "Login Count", "id": "login_count", "type": "numeric"},
-                    {"name": "Created", "id": "created_at", "type": "text"},
+                    # hidden technical id (used for updates)
+                    {
+                        "name": "_id",
+                        "id": "_id",
+                        "type": "text",
+                        "editable": False,
+                        "hideable": True,
+                    },
+                    {
+                        "name": "Username",
+                        "id": "username",
+                        "type": "text",
+                        "editable": True,
+                        "hideable": True,
+                    },
+                    {
+                        "name": "Email",
+                        "id": "email",
+                        "type": "text",
+                        "editable": True,
+                        "hideable": True,
+                    },
+                    {
+                        "name": "Name",
+                        "id": "name",
+                        "type": "text",
+                        "editable": True,
+                        "hideable": True,
+                    },
+                    {
+                        "name": "Auth Method",
+                        "id": "provider",
+                        "type": "text",
+                        "editable": False,
+                        "hideable": True,
+                    },
+                    {
+                        "name": "Roles",
+                        "id": "roles",
+                        "type": "text",
+                        "editable": True,
+                        "hideable": True,
+                    },
+                    {
+                        "name": "Active",
+                        "id": "is_active",
+                        "type": "text",
+                        "editable": True,
+                        "presentation": "dropdown",
+                        "hideable": True,
+                    },
+                    {
+                        "name": "Institute",
+                        "id": "institute",
+                        "type": "text",
+                        "editable": True,
+                        "hideable": True,
+                    },
+                    {
+                        "name": "Batch",
+                        "id": "batch",
+                        "type": "text",
+                        "editable": True,
+                        "hideable": True,
+                    },
+                    {
+                        "name": "Last Login",
+                        "id": "last_login",
+                        "type": "text",
+                        "editable": False,
+                        "hideable": True,
+                    },
+                    {
+                        "name": "Login Count",
+                        "id": "login_count",
+                        "type": "numeric",
+                        "editable": False,
+                        "hideable": True,
+                    },
+                    {
+                        "name": "Created",
+                        "id": "created_at",
+                        "type": "text",
+                        "editable": False,
+                        "hideable": True,
+                    },
                 ],
                 data=users_data,
-                editable=False,
+                editable=True,
+                hidden_columns=["_id"],
+                dropdown={
+                    "is_active": {
+                        "options": [
+                            {"label": "Active (✓)", "value": "✓"},
+                            {"label": "Inactive (✗)", "value": "✗"},
+                        ]
+                    }
+                },
                 filter_action="native",
                 sort_action="native",
                 sort_mode="multi",
                 page_action="native",
                 page_current=0,
                 page_size=20,
-                # ADD THESE LINES FOR SELECTION
                 row_selectable="multi",
                 selected_rows=[],
                 style_cell={
@@ -1432,13 +1698,89 @@ def layout() -> html.Div:
                         "backgroundColor": "#d1ecf1",
                         "color": "black",
                     },
-                    # ADD THIS FOR SELECTED ROW HIGHLIGHTING
                     {
                         "if": {"state": "selected"},
                         "backgroundColor": "#007bff",
                         "color": "white",
                     },
                 ],
+            ),
+            # Custom property tool (adds/updates a field on selected users)
+            dbc.Card(
+                [
+                    dbc.CardHeader("Add/Update a custom property on selected users"),
+                    dbc.CardBody(
+                        [
+                            dbc.Alert(id="custom-prop-alert", is_open=False),
+                            dbc.Row(
+                                [
+                                    dbc.Col(
+                                        dbc.Input(
+                                            id="custom-prop-name",
+                                            placeholder=(
+                                                "Property name (e.g. department)",
+                                            ),
+                                            type="text",
+                                        ),
+                                        md=4,
+                                    ),
+                                    dbc.Col(
+                                        dbc.Select(
+                                            id="custom-prop-type",
+                                            options=[
+                                                {"label": "String", "value": "string"},
+                                                {"label": "Number", "value": "number"},
+                                                {
+                                                    "label": "Boolean",
+                                                    "value": "boolean",
+                                                },
+                                                {"label": "JSON", "value": "json"},
+                                            ],
+                                            value="string",
+                                        ),
+                                        md=3,
+                                    ),
+                                    dbc.Col(
+                                        dbc.Input(
+                                            id="custom-prop-value",
+                                            placeholder=(
+                                                'Value (JSON example: {"a": 1})',
+                                            ),
+                                            type="text",
+                                        ),
+                                        md=5,
+                                    ),
+                                ],
+                                className="g-2",
+                            ),
+                            dbc.ButtonGroup(
+                                [
+                                    dbc.Button(
+                                        "Apply to selected users",
+                                        id="custom-prop-apply-btn",
+                                        color="primary",
+                                    ),
+                                    dbc.Button(
+                                        "Delete property from selected users",
+                                        id="custom-prop-delete-btn",
+                                        color="danger",
+                                        outline=True,
+                                    ),
+                                ],
+                                className="mt-3",
+                            ),
+                            html.Div(
+                                (
+                                    "Select one or more rows above, "
+                                    "then apply the property."
+                                ),
+                                className="text-muted small mt-2",
+                            ),
+                        ]
+                    ),
+                ],
+                style=ADMIN_CARD_STYLE,
+                className="mt-3",
             ),
             # Keep all your existing modals
             create_add_user_modal(),
@@ -1633,7 +1975,142 @@ def handle_export(
 dash.register_page(__name__, path="/admin", title="Admin Dashboard")
 
 
-# Add callbacks for the add user functionality
+@callback(
+    [Output("users-table", "columns"), Output("users-table", "hidden_columns")],
+    Input("users-table", "data"),
+)
+def update_users_table_columns(
+    rows: List[Dict[str, Any]],
+) -> Tuple[List[Dict[str, Any]], List[str]]:
+    """Auto-add columns for custom user properties.
+
+    Any non-sensitive, non-protected keys present in the current table data will
+    appear as hideable columns (and editable only if whitelisted in `_EDITABLE_COLS`).
+    """
+    # Start from the canonical base column set (includes the new 'batch' field).
+    base = [
+        {
+            "name": "_id",
+            "id": "_id",
+            "type": "text",
+            "editable": False,
+            "hideable": True,
+        },
+        {
+            "name": "Username",
+            "id": "username",
+            "type": "text",
+            "editable": True,
+            "hideable": True,
+        },
+        {
+            "name": "Email",
+            "id": "email",
+            "type": "text",
+            "editable": True,
+            "hideable": True,
+        },
+        {
+            "name": "Name",
+            "id": "name",
+            "type": "text",
+            "editable": True,
+            "hideable": True,
+        },
+        {
+            "name": "Auth Method",
+            "id": "provider",
+            "type": "text",
+            "editable": False,
+            "hideable": True,
+        },
+        {
+            "name": "Roles",
+            "id": "roles",
+            "type": "text",
+            "editable": True,
+            "hideable": True,
+        },
+        {
+            "name": "Active",
+            "id": "is_active",
+            "type": "text",
+            "editable": True,
+            "presentation": "dropdown",
+            "hideable": True,
+        },
+        {
+            "name": "Institute",
+            "id": "institute",
+            "type": "text",
+            "editable": True,
+            "hideable": True,
+        },
+        {
+            "name": "Batch",
+            "id": "batch",
+            "type": "text",
+            "editable": True,
+            "hideable": True,
+        },
+        {
+            "name": "Last Login",
+            "id": "last_login",
+            "type": "text",
+            "editable": False,
+            "hideable": True,
+        },
+        {
+            "name": "Login Count",
+            "id": "login_count",
+            "type": "numeric",
+            "editable": False,
+            "hideable": True,
+        },
+        {
+            "name": "Created",
+            "id": "created_at",
+            "type": "text",
+            "editable": False,
+            "hideable": True,
+        },
+    ]
+
+    if not rows:
+        hidden = [c["id"] for c in base if c["id"] not in _DEFAULT_VISIBLE_COLS]
+        return base, hidden
+
+    base_ids = {c["id"] for c in base}
+
+    extra: set[str] = set()
+    for r in rows:
+        for k in (r or {}).keys():
+            if k in base_ids or k in _PROTECTED_COLS or k == "id":
+                continue
+            if k.startswith("_"):
+                continue
+            if _SENSITIVE_KEY_RE.search(k):
+                continue
+            extra.add(k)
+
+    for k in sorted(extra):
+        base.append(
+            {
+                "name": k.replace("_", " ").title(),
+                "id": k,
+                "type": "text",
+                "editable": k in _EDITABLE_COLS,
+                "hideable": True,
+            }
+        )
+
+    hidden = [c["id"] for c in base if c["id"] not in _DEFAULT_VISIBLE_COLS]
+    if "_id" not in hidden:
+        hidden.append("_id")
+
+    return base, hidden
+
+
 @callback(
     Output("add-user-modal", "is_open"),
     [
@@ -1657,8 +2134,9 @@ def toggle_add_user_modal(
 
 @callback(
     [
-        Output("user-operation-alert", "children"),
+        Output("user-operation-alert", "children", allow_duplicate=True),
         Output("users-table", "data", allow_duplicate=True),
+        Output("users-table-original", "data", allow_duplicate=True),
         Output("new-username", "value"),
         Output("new-email", "value"),
         Output("new-name", "value"),
@@ -1690,10 +2168,10 @@ def handle_add_user(
     password: str,
     roles: list,
     is_active: bool,
-) -> Tuple[html.Div, List[Dict], str, str, str, str, str, List[str], bool]:
+) -> Tuple[html.Div, List[Dict], List[Dict], str, str, str, str, str, List[str], bool]:
     """Handle adding a new user."""
     if not n_clicks:
-        return "", dash.no_update, "", "", "", "", "", ["visitor"], True
+        return "", dash.no_update, dash.no_update, "", "", "", "", "", ["visitor"], True
 
     # Validate input
     validation_errors = validate_new_user_data(
@@ -1711,6 +2189,7 @@ def handle_add_user(
         )
         return (
             alert,
+            dash.no_update,
             dash.no_update,
             username,
             email,
@@ -1734,7 +2213,18 @@ def handle_add_user(
             color="success",
             dismissable=True,
         )
-        return alert, updated_users_data, "", "", "", "", "", ["visitor"], True
+        return (
+            alert,
+            updated_users_data,
+            updated_users_data,
+            "",
+            "",
+            "",
+            "",
+            "",
+            ["visitor"],
+            True,
+        )
     else:
         # Error - keep form data
         alert = dbc.Alert(
@@ -1745,6 +2235,7 @@ def handle_add_user(
         return (
             alert,
             dash.no_update,
+            dash.no_update,
             username,
             email,
             name,
@@ -1753,6 +2244,90 @@ def handle_add_user(
             roles,
             is_active,
         )
+
+
+@callback(
+    [
+        Output("user-operation-alert", "children", allow_duplicate=True),
+        Output("users-table", "data", allow_duplicate=True),
+        Output("users-table-original", "data", allow_duplicate=True),
+    ],
+    Input("users-table", "data_timestamp"),
+    [State("users-table", "data"), State("users-table-original", "data")],
+    prevent_initial_call=True,
+)
+def persist_inline_user_edits(
+    _ts: int,
+    current_rows: List[Dict[str, Any]],
+    original_rows: List[Dict[str, Any]],
+) -> Tuple[Union[str, html.Div], List[Dict], List[Dict]]:
+    """Persist inline edits from the users table into MongoDB.
+
+    Uses `users-table-original` as the last-saved snapshot and applies a sanitized
+    patch via `UserManager.update_user_by_id`.
+    """
+    if not current_rows or original_rows is None:
+        raise PreventUpdate
+
+    prev_by_id: Dict[str, Dict[str, Any]] = {}
+    for r in original_rows or []:
+        rid = r.get("_id") or r.get("id")
+        if rid:
+            prev_by_id[str(rid)] = r
+
+    um = UserManager()
+    updated_count = 0
+    failed: List[str] = []
+
+    for row in current_rows:
+        user_id = row.get("_id") or row.get("id")
+        if not user_id:
+            continue
+        user_id = str(user_id)
+
+        prev = prev_by_id.get(user_id)
+        if not prev:
+            # Row not in our snapshot (e.g., refreshed list). Skip to avoid
+            # accidental writes.
+            continue
+
+        patch = _sanitize_patch(row, prev)
+        if not patch:
+            continue
+
+        logger.info(f"Applying patch !!! for user {user_id}: {patch}")
+        saved = um.update_user_by_id(user_id, patch)
+        if saved:
+            updated_count += 1
+        else:
+            failed.append(row.get("email") or row.get("username") or user_id)
+
+    # If nothing changed, keep the UI stable.
+    if updated_count == 0 and not failed:
+        raise PreventUpdate
+
+    fresh = get_users_data()
+
+    if failed:
+        alert = dbc.Alert(
+            [
+                html.I(className="fas fa-exclamation-triangle me-2"),
+                f"Saved {updated_count} row(s). Failed for: {', '.join(failed)}",
+            ],
+            color="warning",
+            dismissable=True,
+        )
+        return alert, fresh, fresh
+
+    alert = dbc.Alert(
+        [
+            html.I(className="fas fa-check-circle me-2"),
+            f"Saved {updated_count} row(s) to MongoDB.",
+        ],
+        color="success",
+        dismissable=True,
+    )
+    return alert, fresh, fresh
 
 
 @callback(Output("password-row", "style"), [Input("new-provider", "value")])
@@ -1953,6 +2528,7 @@ def get_remaining_admin_count(
     [
         Output("user-operation-alert", "children", allow_duplicate=True),
         Output("users-table", "data", allow_duplicate=True),
+        Output("users-table-original", "data", allow_duplicate=True),
         Output("users-table", "selected_rows"),
     ],
     [Input("confirm-delete-selected", "n_clicks")],
@@ -1965,10 +2541,10 @@ def get_remaining_admin_count(
 )
 def delete_selected_users(
     n_clicks: int, selected_rows: List[int], table_data: List[Dict], delete_type: str
-) -> Tuple[Union[str, html.Div], List[Dict], List[int]]:
+) -> Tuple[Union[str, html.Div], List[Dict], List[Dict], List[int]]:
     """Delete the selected users."""
     if not n_clicks or not selected_rows:
-        return "", dash.no_update, []
+        return "", dash.no_update, dash.no_update, []
 
     try:
         user_manager = UserManager()
@@ -1991,7 +2567,7 @@ def delete_selected_users(
                 color="danger",
                 dismissable=True,
             )
-            return alert, dash.no_update, selected_rows
+            return alert, dash.no_update, dash.no_update, selected_rows
 
         # Perform deletions
         successful_deletions = []
@@ -2052,7 +2628,12 @@ def delete_selected_users(
         # Refresh user data
         updated_users_data = get_users_data()
 
-        return html.Div(alert_content), updated_users_data, []  # Clear selection
+        return (
+            html.Div(alert_content),
+            updated_users_data,
+            updated_users_data,
+            [],
+        )  # Clear selection
 
     except Exception as e:
         logger.error(f"Error during bulk user deletion: {e}")
@@ -2064,4 +2645,183 @@ def delete_selected_users(
             color="danger",
             dismissable=True,
         )
-        return alert, dash.no_update, selected_rows
+        return alert, dash.no_update, dash.no_update, selected_rows
+
+
+@callback(
+    [
+        Output("custom-prop-alert", "children"),
+        Output("custom-prop-alert", "color"),
+        Output("custom-prop-alert", "is_open"),
+        Output("users-table", "data", allow_duplicate=True),
+        Output("users-table-original", "data", allow_duplicate=True),
+    ],
+    Input("custom-prop-apply-btn", "n_clicks"),
+    [
+        State("custom-prop-name", "value"),
+        State("custom-prop-type", "value"),
+        State("custom-prop-value", "value"),
+        State("users-table", "selected_rows"),
+        State("users-table", "data"),
+    ],
+    prevent_initial_call=True,
+)
+def apply_custom_property(
+    _n: int,
+    prop_name: str,
+    prop_type: str,
+    prop_value: object,
+    selected_rows: List[int],
+    table_data: List[Dict],
+) -> Tuple[html.Div, str, bool, List[Dict], List[Dict]]:
+    """Add/update a custom property on selected users using update_user_by_id()."""
+    if not selected_rows:
+        return (
+            "Select at least one user row first.",
+            "warning",
+            True,
+            dash.no_update,
+            dash.no_update,
+        )
+
+    err = _validate_custom_field_name(prop_name or "")
+    if err:
+        return err, "warning", True, dash.no_update, dash.no_update
+
+    try:
+        parsed_value = _parse_custom_value(prop_value, prop_type or "string")
+    except Exception as ve:
+        return (
+            f"Invalid value for type '{prop_type}': {ve}",
+            "warning",
+            True,
+            dash.no_update,
+            dash.no_update,
+        )
+
+    um = UserManager()
+    applied = 0
+    failed: List[str] = []
+
+    for i in selected_rows:
+        if i < 0 or i >= len(table_data):
+            continue
+        row = table_data[i]
+        user_id = row.get("id") or row.get("_id")
+        label = row.get("email") or row.get("username") or str(user_id)
+        if not user_id:
+            failed.append(label)
+            continue
+        logger.info(
+            f"Applying custom property for user !!!! {user_id}: "
+            f"{prop_name.strip()} = {parsed_value} ({prop_type})"
+        )
+        updated = um.update_user_by_id(str(user_id), {prop_name.strip(): parsed_value})
+        if updated:
+            applied += 1
+        else:
+            failed.append(label)
+
+    fresh = get_users_data()
+
+    if failed:
+        return (
+            f"Applied to {applied} user(s). Failed for: {', '.join(failed)}",
+            "warning",
+            True,
+            fresh,
+            fresh,
+        )
+
+    return (
+        f"Property '{prop_name.strip()}' applied to {applied} user(s).",
+        "success",
+        True,
+        fresh,
+        fresh,
+    )
+
+
+@callback(
+    [
+        Output("custom-prop-alert", "children", allow_duplicate=True),
+        Output("custom-prop-alert", "color", allow_duplicate=True),
+        Output("custom-prop-alert", "is_open", allow_duplicate=True),
+        Output("users-table", "data", allow_duplicate=True),
+        Output("users-table-original", "data", allow_duplicate=True),
+    ],
+    Input("custom-prop-delete-btn", "n_clicks"),
+    [
+        State("custom-prop-name", "value"),
+        State("users-table", "selected_rows"),
+        State("users-table", "data"),
+    ],
+    prevent_initial_call=True,
+)
+def delete_custom_property(
+    _n: int,
+    prop_name: str,
+    selected_rows: List[int],
+    table_data: List[Dict],
+) -> Tuple[html.Div, str, bool, List[Dict], List[Dict]]:
+    """Remove a custom property from selected users (MongoDB $unset)."""
+    if not selected_rows:
+        return (
+            "Select at least one user row first.",
+            "warning",
+            True,
+            dash.no_update,
+            dash.no_update,
+        )
+
+    err = _validate_custom_field_name(prop_name or "")
+    if err:
+        return err, "warning", True, dash.no_update, dash.no_update
+
+    field = prop_name.strip()
+
+    um = UserManager()
+    removed = 0
+    failed: List[str] = []
+    succeeded_rows: List[int] = []
+
+    for i in selected_rows:
+        if i < 0 or i >= len(table_data):
+            continue
+        row = table_data[i]
+        user_id = row.get("id") or row.get("_id")
+        label = row.get("email") or row.get("username") or str(user_id)
+        if not user_id:
+            failed.append(label)
+            continue
+
+        ok = um.unset_user_field_by_id(str(user_id), field)
+        if ok:
+            removed += 1
+            succeeded_rows.append(i)
+        else:
+            failed.append(label)
+
+    # Update current table rows immediately so the column can disappear without waiting
+    # for a full refresh.
+    updated_rows: List[Dict[str, Any]] = [dict(r) for r in (table_data or [])]
+    for i in succeeded_rows:
+        if 0 <= i < len(updated_rows):
+            updated_rows[i].pop(field, None)
+
+    if failed:
+        return (
+            f"Removed '{field}' for {removed} user(s). Failed for: {', '.join(failed)}",
+            "warning",
+            True,
+            updated_rows,
+            updated_rows,
+        )
+
+    return (
+        f"Removed '{field}' for {removed} user(s).",
+        "success",
+        True,
+        updated_rows,
+        updated_rows,
+    )

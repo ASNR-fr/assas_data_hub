@@ -1,0 +1,44 @@
+/* Scope to only this widget block */
+.assas-created-at-picker .DateInput_input {
+  font-family: var(--bs-body-font-family, Arial, sans-serif) !important;
+  font-size: 1rem !important;
+  font-weight: 400 !important;
+  line-height: 1.5 !important;
+
+  height: calc(2.375rem + 2px) !important; /* Bootstrap-ish */
+  padding: 0.375rem 0.75rem !important;
+
+  color: #212529 !important;
+  background-color: #fff !important;
+
+  border: 1px solid #ced4da !important;
+  border-radius: 0.375rem !important;
+}
+
+/* Ensure the date picker wrapper stretches full width */
+.assas-created-at-picker .DateInput,
+.assas-created-at-picker .SingleDatePicker,
+.assas-created-at-picker .SingleDatePickerInput {
+  width: 100% !important;
+}
+
+/* Force the time input to the same typography */
+.assas-created-at-picker .assas-created-at-time {
+  font-family: var(--bs-body-font-family, Arial, sans-serif) !important;
+  font-size: 1rem !important;
+  font-weight: 400 !important;
+  line-height: 1.5 !important;
+}
+
+/* Some browsers need this to keep the rendered text color consistent */
+.assas-created-at-picker .assas-created-at-time,
+.assas-created-at-picker .DateInput_input {
+  -webkit-text-fill-color: #212529 !important;
+}
+
+/* Disabled styles */
+.assas-created-at-picker .DateInput_input__disabled,
+.assas-created-at-picker .assas-created-at-time:disabled {
+  background-color: #e9ecef !important;
+  cursor: not-allowed !important;
+}

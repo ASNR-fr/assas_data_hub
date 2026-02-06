@@ -16,6 +16,8 @@ from flask import (
     Response,
     render_template,
 )
+
+from flask_app import get_mongo_client
 from .auth_utils import (
     auth,
     users,
@@ -107,6 +109,8 @@ def register_dynamic_routes() -> None:
 
         manager = AssasDatabaseManager(
             database_handler=AssasDatabaseHandler(
+                client=get_mongo_client(app.config["CONNECTIONSTRING"]),
+                backup_directory=app.config["BACKUP_DIRECTORY"],
                 database_name=app.config["MONGO_DB_NAME"],
             )
         )
@@ -177,6 +181,8 @@ def register_dynamic_routes() -> None:
 
         manager = AssasDatabaseManager(
             database_handler=AssasDatabaseHandler(
+                client=get_mongo_client(app.config["CONNECTIONSTRING"]),
+                backup_directory=app.config["BACKUP_DIRECTORY"],
                 database_name=app.config["MONGO_DB_NAME"],
             )
         )
@@ -209,6 +215,8 @@ def register_dynamic_routes() -> None:
 
         manager = AssasDatabaseManager(
             database_handler=AssasDatabaseHandler(
+                client=get_mongo_client(app.config["CONNECTIONSTRING"]),
+                backup_directory=app.config["BACKUP_DIRECTORY"],
                 database_name=app.config["MONGO_DB_NAME"],
             )
         )
@@ -293,6 +301,8 @@ def register_dynamic_routes() -> None:
 
         manager = AssasDatabaseManager(
             database_handler=AssasDatabaseHandler(
+                client=get_mongo_client(app.config["CONNECTIONSTRING"]),
+                backup_directory=app.config["BACKUP_DIRECTORY"],
                 database_name=app.config["MONGO_DB_NAME"],
             )
         )
@@ -373,6 +383,8 @@ def register_dynamic_routes() -> None:
 
         manager = AssasDatabaseManager(
             database_handler=AssasDatabaseHandler(
+                client=get_mongo_client(app.config["CONNECTIONSTRING"]),
+                backup_directory=app.config["BACKUP_DIRECTORY"],
                 database_name=app.config["MONGO_DB_NAME"],
             )
         )

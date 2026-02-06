@@ -7,10 +7,30 @@ from dotenv import load_dotenv
 from venv import logger
 from flask import Flask
 from flask.config import Config
+from pymongo import MongoClient
 from werkzeug.middleware.proxy_fix import ProxyFix
 from .utils.url_utils import get_base_url, get_auth_base_url
 
 load_dotenv()
+
+_client = None
+
+
+def get_mongo_client(connection_string: str) -> MongoClient:
+    """Get a global MongoClient instance."""
+    global _client
+    if _client is None:
+        logger.info("Creating new global MongoClient. ")
+        logger.info(f"Connection string: {connection_string}")
+        _client = MongoClient(
+            connection_string,
+            serverSelectionTimeoutMS=5000,
+            socketTimeoutMS=20000,
+            connectTimeoutMS=5000,
+        )
+    else:
+        logger.debug("Reusing existing global MongoClient.")
+    return _client
 
 
 class AttrConfig(Config):

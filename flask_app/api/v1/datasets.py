@@ -2,13 +2,16 @@
 
 import logging
 import uuid
+import re  # <-- add
 import numpy as np
+import netCDF4 as nc
+from datetime import datetime, timezone
 from typing import Dict, Any, List, Union
 
 from flask import Blueprint, request, Response
 from flask import current_app as app
 
-from ...auth_utils import auth
+from ...auth_utils import auth, get_current_user
 from ...utils.api_utils import APIResponse, handle_api_error
 from assasdb import (
     AssasDatabaseManager,
@@ -1144,3 +1147,257 @@ def get_metadata_variable(
                 f"for dataset {dataset_id}"
             ),
         )
+
+
+@datasets_bp.route("/<uuid:dataset_id>/attributes", methods=["POST"])
+@auth.login_required
+def update_dataset_attributes(dataset_id: uuid.UUID) -> Response:
+    """Update NetCDF4 dataset attributes (curators only).
+
+    Updates both MongoDB and the NetCDF4 file to keep them in sync.
+    """
+    # Check if user is curator or admin
+    current_user_data = get_current_user()
+    roles = current_user_data.get("roles", [])
+
+    if "curator" not in roles and "admin" not in roles:
+        logger.warning(
+            f"Unauthorized access attempt by user "
+            f"{current_user_data.get('username', 'unknown')}"
+        )
+        return APIResponse.error("Unauthorized. Curator access required.", 403)
+
+    try:
+        # Get request data
+        data: Dict[str, Any] = request.get_json()
+        if not data:
+            return APIResponse.error("No data provided", 400)
+
+        meta_title = data.get("meta_title")  # Optional, not used currently
+        meta_name = data.get("meta_name")
+        meta_description = data.get("meta_description")
+
+        logger.info(
+            f"Received update request for dataset {dataset_id} with data: {data}"
+        )
+
+        # Validate required fields
+
+        if (
+            meta_title is None
+            or not isinstance(meta_title, str)
+            or not meta_title.strip()
+        ):
+            return APIResponse.error("meta_title is required and cannot be empty", 400)
+
+        if meta_name is None or not isinstance(meta_name, str) or not meta_name.strip():
+            return APIResponse.error("meta_name is required and cannot be empty", 400)
+
+        if (
+            meta_description is None
+            or not isinstance(meta_description, str)
+            or not meta_description.strip()
+        ):
+            return APIResponse.error(
+                "meta_description is required and cannot be empty", 400
+            )
+
+        # Validate length
+
+        if len(meta_title.strip()) > 50:
+            return APIResponse.error(
+                (
+                    f"meta_title is too long ({len(meta_title.strip())} characters). "
+                    "Maximum 50 characters allowed."
+                ),
+                400,
+            )
+
+        if len(meta_name.strip()) > 50:
+            return APIResponse.error(
+                (
+                    f"meta_name is too long ({len(meta_name.strip())} characters). "
+                    "Maximum 50 characters allowed."
+                ),
+                400,
+            )
+
+        if len(meta_description.strip()) > 200:
+            return APIResponse.error(
+                (
+                    f"meta_description is too long ({len(meta_description.strip())} "
+                    "characters). Maximum 200 characters allowed."
+                ),
+                400,
+            )
+
+        # Get database manager
+        manager = DatasetService.get_database_manager()
+        dataset_id_str = str(dataset_id)
+
+        # Check if dataset exists
+        document = manager.get_database_entry_by_uuid(dataset_id_str)
+        if not document:
+            logger.warning(f"Dataset {dataset_id_str} not found")
+            return APIResponse.not_found("Dataset not found")
+
+        result_filepath = document.get("system_result", "")
+
+        # Prepare update data
+        update_data = {
+            "meta_title": meta_title.strip(),
+            "meta_name": meta_name.strip(),
+            "meta_description": meta_description.strip(),
+        }
+
+        # NEW: Uniqueness restrictions for meta_title and meta_name (exclude self)
+        try:
+            exclude_self = {"system_uuid": {"$ne": dataset_id_str}}
+
+            title_re = {
+                "$regex": f"^{re.escape(update_data['meta_title'])}$",
+                "$options": "i",
+            }
+            name_re = {
+                "$regex": f"^{re.escape(update_data['meta_name'])}$",
+                "$options": "i",
+            }
+
+            projection = {"system_uuid": 1, "meta_title": 1, "meta_name": 1}
+
+            conflict_title = manager.database_handler.file_collection.find_one(
+                {**exclude_self, "meta_title": title_re},
+                projection,
+            )
+            conflict_name = manager.database_handler.file_collection.find_one(
+                {**exclude_self, "meta_name": name_re},
+                projection,
+            )
+
+            if conflict_title or conflict_name:
+                problems: list[str] = []
+
+                if conflict_title:
+                    other_uuid = conflict_title.get("system_uuid")
+                    other_name = conflict_title.get("meta_name")
+                    suffix = f" (meta_name: {other_name})" if other_name else ""
+                    problems.append(
+                        f"meta_title '{update_data['meta_title']}' "
+                        f"is already used by dataset {other_uuid}.{suffix}"
+                    )
+
+                if conflict_name:
+                    other_uuid = conflict_name.get("system_uuid")
+                    other_title = conflict_name.get("meta_title")
+                    suffix = f" (meta_title: {other_title})" if other_title else ""
+                    problems.append(
+                        f"meta_name '{update_data['meta_name']}' "
+                        f"is already used by dataset {other_uuid}.{suffix}"
+                    )
+
+                logger.warning(
+                    f"Uniqueness constraint violation for dataset "
+                    f"{dataset_id_str}: {'; '.join(problems)}"
+                )
+
+                return APIResponse.error(" ".join(problems), 409)
+
+        except Exception as db_check_error:
+            logger.error(
+                f"Failed to validate uniqueness for dataset "
+                f"{dataset_id_str}: {db_check_error}.",
+                exc_info=True,
+            )
+            return APIResponse.error("Failed to validate uniqueness constraints", 500)
+
+        logger.info(f"Updating dataset {dataset_id_str} with data: {update_data}")
+
+        # STEP 1: Update NetCDF4 file first (atomic operation)
+        if result_filepath:
+            try:
+                with nc.Dataset(result_filepath, "a") as ncfile:
+                    # Update global attributes
+                    ncfile.title = meta_title.strip()
+                    ncfile.technical_name = meta_name.strip()
+                    ncfile.description = meta_description.strip()
+                    # Add timestamp of last modification
+                    ncfile.last_modified = datetime.now(timezone.utc).isoformat()
+                    ncfile.last_modified_by = current_user_data.get(
+                        "username", "unknown"
+                    )
+
+                logger.info(f"Successfully updated NetCDF4 file: {result_filepath}")
+
+            except Exception as nc_error:
+                logger.error(
+                    f"Failed to update NetCDF4 file: {nc_error}", exc_info=True
+                )
+                return APIResponse.error(
+                    f"Failed to update NetCDF4 file: {str(nc_error)}", 500
+                )
+        else:
+            logger.warning(f"No result file path found for dataset {dataset_id_str}")
+
+        # STEP 2: Update MongoDB (only if NetCDF4 update succeeded or no file exists)
+        try:
+            result = manager.database_handler.file_collection.update_one(
+                {"system_uuid": dataset_id_str},
+                {
+                    "$set": {
+                        **update_data,
+                        "system_last_modified": datetime.now(timezone.utc).isoformat(),
+                        "system_last_modified_by": current_user_data.get(
+                            "username", "unknown"
+                        ),
+                    }
+                },
+            )
+
+            logger.info(
+                f"MongoDB update result: matched={result.matched_count}, "
+                f"modified={result.modified_count}"
+            )
+
+            if result.matched_count > 0:
+                # Fetch updated document to verify
+                updated_document = manager.get_database_entry_by_uuid(dataset_id_str)
+                logger.info(f"Successfully updated dataset {dataset_id_str}")
+
+                return APIResponse.success(
+                    {
+                        "message": (
+                            "Dataset attributes updated successfully "
+                            "in both MongoDB and NetCDF4 file"
+                        ),
+                        "dataset": DatasetService.serialize_dataset(
+                            updated_document, include_full_data=True
+                        ),
+                        "update_info": {
+                            "matched_count": result.matched_count,
+                            "modified_count": result.modified_count,
+                            "netcdf4_updated": bool(result_filepath),
+                        },
+                    }
+                )
+            else:
+                logger.error(f"No document matched for dataset {dataset_id_str}")
+                return APIResponse.error(
+                    "Failed to update dataset - no matching document found", 404
+                )
+
+        except Exception as db_error:
+            logger.error(f"Failed to update MongoDB: {db_error}", exc_info=True)
+            # If MongoDB update fails but NetCDF4 succeeded, we have inconsistency
+            # You might want to rollback the NetCDF4 change or log this
+            # for manual intervention
+            return APIResponse.error(
+                (
+                    f"Failed to update MongoDB "
+                    f"(NetCDF4 file may be out of sync): {str(db_error)}"
+                ),
+                500,
+            )
+
+    except Exception as e:
+        logger.error(f"Error updating dataset attributes: {str(e)}", exc_info=True)
+        return APIResponse.error(f"Internal server error: {str(e)}", 500)

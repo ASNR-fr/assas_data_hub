@@ -6,6 +6,7 @@ dataset index.
 """
 
 import os
+import re
 import dash
 import dash_bootstrap_components as dbc
 import pandas as pd
@@ -32,6 +33,9 @@ from zipfile import ZipFile
 from uuid import uuid4
 from pathlib import Path
 from typing import List, Tuple
+from functools import lru_cache
+
+from flask_app import get_mongo_client
 from ...utils.url_utils import get_base_url
 from assasdb import AssasDatabaseManager, AssasDatabaseHandler
 
@@ -68,108 +72,424 @@ operators = [
 ]
 
 
-def update_table_data() -> pd.DataFrame:
-    """Update the table data from the database.
+# Fields that are not needed for the table view (reduce payload / speed up reads)
+_TABLE_PROJECTION_EXCLUDE = {
+    "meta_data_variables": 0,
+    "system_user_info": 0,
+    "upload_info": 0,
+    "system_imported_from": 0,
+    # "meta_description": 0,
+}
 
-    Returns:
-        pd.DataFrame: DataFrame with the table data.
+# DataFrame columns that should be forced into a DataTable-friendly representation
+_TABLE_STRINGIFY_COLUMNS = {
+    "meta_data_variables",
+    "meta_keywords",
+    "meta_tags",
+    "system_user_info",
+}
 
-    """
-    logger.info("Load database entries to table.")
+_SORTABLE_COLUMNS = {
+    "system_index",
+    "meta_name",
+    "system_status",
+    "system_date",
+    "system_user",
+    "system_size",
+    "system_size_hdf5",
+    "system_number_of_samples",
+    "system_number_of_samples_completed",
+    "system_uuid",
+    "system_upload_uuid",
+}
 
-    database_manager = AssasDatabaseManager(
+_FILTERABLE_COLUMNS = set(_SORTABLE_COLUMNS)
+
+
+def _build_database_manager() -> AssasDatabaseManager:
+    return AssasDatabaseManager(
         database_handler=AssasDatabaseHandler(
-            client=MongoClient(app.config["CONNECTIONSTRING"]),
+            client=get_mongo_client(app.config["CONNECTIONSTRING"]),
             backup_directory=app.config["BACKUP_DIRECTORY"],
             database_name=app.config["MONGO_DB_NAME"],
         )
     )
 
-    table_data_local = database_manager.get_all_database_entries()
 
-    # Clean complex data types that DataTable can't handle
-    def clean_column_data(df):
-        """Clean DataFrame columns to ensure DataTable compatibility."""
-        df_clean = df.copy()
+def _clean_table_dataframe(df: pd.DataFrame) -> pd.DataFrame:
+    """Normalize dataframe values so Dash DataTable can render them reliably."""
+    if df.empty:
+        return df
 
-        # Convert complex data types to strings
-        for col in df_clean.columns:
-            if col in ["meta_data_variables", "meta_keywords", "meta_tags"]:
-                # Convert lists/dicts to JSON strings
-                df_clean[col] = df_clean[col].apply(
-                    lambda x: str(x) if x is not None else ""
-                )
-            elif col.startswith("meta_") and df_clean[col].dtype == "object":
-                # Convert any other complex metadata to strings
-                df_clean[col] = df_clean[col].astype(str).fillna("")
+    df_clean = df.copy()
 
-        return df_clean
+    for col in df_clean.columns:
+        
+        if col.endswith("_uuid"):
+            df_clean[col] = df_clean[col].apply(lambda x: str(x) if x is not None else "")
+            continue
+        
+        if col in _TABLE_STRINGIFY_COLUMNS:
+            df_clean[col] = \
+                df_clean[col].apply(lambda x: str(x) if x is not None else "")
+        elif col.startswith("meta_") and df_clean[col].dtype == "object":
+            df_clean[col] = df_clean[col].astype(str).fillna("")
 
-    # Clean the data first
-    table_data_local = clean_column_data(table_data_local)
+    return df_clean
+
+
+def _status_to_html(status: str) -> str:
+    status_classes = {
+        "Valid": "status-valid",
+        "Invalid": "status-invalid",
+        "Converting": "status-converting",
+        "Uploaded": "status-uploaded",
+    }
+    css_class = status_classes.get(status, "status-unknown")
+    return f'<span class="{css_class}">{str(status)}</span>'
+
+
+def _add_table_presentation_columns(dataframe: pd.DataFrame) -> pd.DataFrame:
+    """Add link/HTML columns used by the DataTable."""
+    if dataframe.empty:
+        return dataframe
+
+    out = dataframe.copy()
+
     download_url = f"{get_base_url()}/files/download/"
-    table_data_local["system_download"] = [
-        f'<a href="{download_url}{entry.system_uuid}">hdf5 file</a>'
-        if entry.system_status == "Valid"
-        else '<span class="no-download">no hdf5 file</span>'
-        for entry in table_data_local.itertuples()
-    ]
     details_url = f"{get_base_url()}/details/"
-    table_data_local["meta_name"] = [
-        f'<a href="{details_url}{entry.system_uuid}">{entry.meta_name}</a>'
-        for entry in table_data_local.itertuples()
-    ]
 
-    def get_status_html(
-        status: str,
-    ) -> str:
-        status_classes = {
-            "Valid": "status-valid",
-            "Invalid": "status-invalid",
-            "Converting": "status-converting",
-            "Uploaded": "status-uploaded",
-        }
-        css_class = status_classes.get(status, "status-unknown")
-        return f'<span class="{css_class}">{str(status)}</span>'
+    # system_download
+    if {"system_uuid", "system_status"}.issubset(out.columns):
+        out["system_download"] = [
+            f'<a href="{download_url}{row.system_uuid}">hdf5 file</a>'
+            if row.system_status == "Valid"
+            else '<span class="no-download">no hdf5 file</span>'
+            for row in out.itertuples()
+        ]
 
-    table_data_local["system_status"] = [
-        get_status_html(entry.system_status) for entry in table_data_local.itertuples()
-    ]
+    # meta_name link
+    if {"system_uuid", "meta_name"}.issubset(out.columns):
+        out["meta_name"] = [
+            f'<a href="{details_url}{row.system_uuid}">{row.meta_name}</a>'
+            for row in out.itertuples()
+        ]
 
-    return table_data_local
+    # system_status HTML badge
+    if "system_status" in out.columns:
+        out["system_status"] = [_status_to_html(row.system_status) for row in out.itertuples()]
+
+    return out
+
+
+def _extract_anchor_text(value: object) -> str:
+    """Extract visible text from an HTML anchor (<a>text</a>) or return str(value)."""
+    if value is None:
+        return ""
+    s = str(value)
+    m = re.search(r">([^<]+)<", s)
+    return (m.group(1) if m else s).strip()
+
+
+def _parse_size_to_bytes(value: object) -> int | None:
+    """Parse sizes like '10 MB', '1.2 GB', '12345' into bytes.
+
+    Returns None if unknown."""
+    if value is None:
+        return None
+    if isinstance(value, (int, float)) and not pd.isna(value):
+        return int(value)
+
+    s = str(value).strip().lower()
+    if not s:
+        return None
+
+    # normalize common variants
+    s = s.replace("bytes", "b").replace("byte", "b")
+    s = s.replace(" ", "")
+
+    m = re.match(r"^([0-9]+(?:\.[0-9]+)?)?([a-z]{0,3})$", s)
+    if not m:
+        return None
+
+    num_str, unit = m.group(1), (m.group(2) or "b")
+    if not num_str:
+        return None
+
+    num = float(num_str)
+
+    mult = {
+        "b": 1,
+        "kb": 1024,
+        "kib": 1024,
+        "mb": 1024**2,
+        "mib": 1024**2,
+        "gb": 1024**3,
+        "gib": 1024**3,
+        "tb": 1024**4,
+        "tib": 1024**4,
+        "pb": 1024**5,
+        "pib": 1024**5,
+        # tolerate short units
+        "k": 1024,
+        "m": 1024**2,
+        "g": 1024**3,
+        "t": 1024**4,
+        "p": 1024**5,
+    }.get(unit)
+
+    if mult is None:
+        return None
+
+    return int(num * mult)
+
+
+def _ensure_sort_helpers(df: pd.DataFrame) -> pd.DataFrame:
+    """Add helper columns used for correct sorting/filtering."""
+    if df.empty:
+        return df
+
+    out = df.copy()
+
+    # Date as datetime for sorting/filtering
+    if "system_date" in out.columns:
+        out["system_date_sort"] = pd.to_datetime(out["system_date"], errors="coerce", utc=True)
+
+    # Size as bytes for sorting/filtering
+    if "system_size" in out.columns:
+        out["system_size_bytes"] = out["system_size"].apply(_parse_size_to_bytes)
+    if "system_size_hdf5" in out.columns:
+        out["system_size_hdf5_bytes"] = out["system_size_hdf5"].apply(_parse_size_to_bytes)
+
+    # Samples as numeric for sorting/filtering (even if stored as strings)
+    if "system_number_of_samples" in out.columns:
+        out["system_number_of_samples_num"] = pd.to_numeric(out["system_number_of_samples"], errors="coerce")
+    if "system_number_of_samples_completed" in out.columns:
+        out["system_number_of_samples_completed_num"] = pd.to_numeric(
+            out["system_number_of_samples_completed"], errors="coerce"
+        )
+
+    # Name sort should use visible label (not the <a href=...> markup)
+    if "meta_name" in out.columns:
+        out["meta_name_sort"] = out["meta_name"].apply(_extract_anchor_text)
+
+    # NEW: UUID helpers (string + lowercase) for stable sorting/filtering
+    if "system_uuid" in out.columns:
+        out["system_uuid_sort"] = out["system_uuid"].astype(str).fillna("").str.lower()
+    if "system_upload_uuid" in out.columns:
+        out["system_upload_uuid_sort"] = out["system_upload_uuid"].astype(str).fillna("").str.lower()
+
+    return out
+
+def split_filter_part(filter_part: str) -> List[str]:
+    """Split a filter part into name, operator, and value.
+
+    Args:
+        filter_part (str): The filter part to split, e.g., "{name} contains 'value'".
+
+    Returns:
+        List[str]: A list containing the name, operator, and value.
+            If no operator is found, returns [None, None, None].
+
+    """
+    logger.info(f"Operators: {operators}")
+    logger.info(f"Filter part: {filter_part}")
+
+    for operator_type in operators:
+        for operator in operator_type:
+            if operator in filter_part:
+                name_part, value_part = filter_part.split(operator, 1)
+                name = name_part[name_part.find("{") + 1 : name_part.rfind("}")]
+
+                value_part = value_part.strip()
+                v0 = value_part[0]
+
+                if v0 == value_part[-1] and v0 in (""", """, "`"):
+                    value = value_part[1:-1].replace("\\" + v0, v0)
+                else:
+                    try:
+                        value = float(value_part)
+                    except ValueError:
+                        value = value_part
+
+                # word operators need spaces after them in the filter string,
+                # but we don't want these later
+                return name, operator_type[0].strip(), value
+
+    return [None] * 3
+
+
+def apply_filters(dataframe: pd.DataFrame, filter_query: str) -> pd.DataFrame:
+    """Apply filters to the dataframe based on filter query."""
+    if not filter_query:
+        return dataframe
+
+    dataframe = _ensure_sort_helpers(dataframe)
+    filtering_expressions = filter_query.split(" && ")
+
+    for filter_part in filtering_expressions:
+        col_name, operator, filter_value = split_filter_part(filter_part)
+        if col_name is None or operator is None:
+            continue
+
+        # NEW: disable filtering for non-allowed (including most hidden) columns
+        if col_name not in _FILTERABLE_COLUMNS:
+            continue
+
+        try:
+            col_series = dataframe[col_name] if col_name in dataframe.columns else None
+
+            if col_name == "system_uuid" and "system_uuid_sort" in dataframe.columns:
+                col_series = dataframe["system_uuid_sort"]
+                filter_value = str(filter_value).strip().lower()
+
+            if col_name == "system_upload_uuid" and "system_upload_uuid_sort" in dataframe.columns:
+                col_series = dataframe["system_upload_uuid_sort"]
+                filter_value = str(filter_value).strip().lower()
+
+            if col_name == "system_date" and "system_date_sort" in dataframe.columns:
+                col_series = dataframe["system_date_sort"]
+                filter_dt = pd.to_datetime(filter_value, errors="coerce", utc=True)
+                if pd.isna(filter_dt):
+                    continue
+                filter_value = filter_dt
+
+            if col_name == "system_size" and "system_size_bytes" in dataframe.columns:
+                col_series = dataframe["system_size_bytes"]
+                filter_value = _parse_size_to_bytes(filter_value)
+                if filter_value is None:
+                    continue
+
+            if col_name == "system_size_hdf5" and "system_size_hdf5_bytes" in dataframe.columns:
+                col_series = dataframe["system_size_hdf5_bytes"]
+                filter_value = _parse_size_to_bytes(filter_value)
+                if filter_value is None:
+                    continue
+
+            if col_name == "system_number_of_samples" and "system_number_of_samples_num" in dataframe.columns:
+                col_series = dataframe["system_number_of_samples_num"]
+                filter_value = pd.to_numeric(filter_value, errors="coerce")
+                if pd.isna(filter_value):
+                    continue
+
+            if col_name == "system_number_of_samples_completed" and "system_number_of_samples_completed_num" in dataframe.columns:
+                col_series = dataframe["system_number_of_samples_completed_num"]
+                filter_value = pd.to_numeric(filter_value, errors="coerce")
+                if pd.isna(filter_value):
+                    continue
+
+            if col_name == "meta_name" and "meta_name_sort" in dataframe.columns and operator in ("contains", "eq", "ne"):
+                col_series = dataframe["meta_name_sort"]
+
+            if col_series is None:
+                continue
+
+            if operator == "eq":
+                dataframe = dataframe.loc[col_series == filter_value]
+            elif operator == "ne":
+                dataframe = dataframe.loc[col_series != filter_value]
+            elif operator == "lt":
+                dataframe = dataframe.loc[col_series < filter_value]
+            elif operator == "le":
+                dataframe = dataframe.loc[col_series <= filter_value]
+            elif operator == "gt":
+                dataframe = dataframe.loc[col_series > filter_value]
+            elif operator == "ge":
+                dataframe = dataframe.loc[col_series >= filter_value]
+            elif operator == "contains":
+                dataframe = dataframe.loc[
+                    col_series.astype(str).str.contains(
+                        str(filter_value), 
+                        case=False,
+                        na=False
+                        )
+                    ]
+            elif operator == "datestartswith":
+                dataframe = dataframe.loc[
+                    col_series.astype(str).str.startswith(str(filter_value))
+                    ]
+
+        except Exception as e:
+            logger.warning(f"Error applying filter {filter_part}: {e}")
+            continue
+
+    return dataframe
+
+def update_table_data() -> pd.DataFrame:
+    """Update the table data from the database (table-optimized snapshot)."""
+    logger.info("Load database entries to table.")
+    try:
+        database_manager = _build_database_manager()
+
+        limit = int(app.config.get("DATABASE_TABLE_LIMIT", 1600))
+        batch_size = int(app.config.get("DATABASE_TABLE_BATCH_SIZE", 100))
+        max_time_ms = int(app.config.get("DATABASE_TABLE_MAX_TIME_MS", 12000))
+
+        dataframe = database_manager.get_all_database_entries_safe(
+            projection=_TABLE_PROJECTION_EXCLUDE,
+            limit=limit,
+            batch_size=batch_size,
+            max_time_ms=max_time_ms,
+        )
+
+        dataframe = _clean_table_dataframe(dataframe)
+        dataframe = _add_table_presentation_columns(dataframe)
+        dataframe = _ensure_sort_helpers(dataframe)
+        return dataframe
+
+    except Exception:
+        # Critical: don't crash the worker/service due to a transient DB timeout
+        logger.exception("Failed to load database entries; returning empty table.")
+        return pd.DataFrame()
+
+_LAST_GOOD_TABLE_DF: pd.DataFrame = pd.DataFrame()
+
+@lru_cache(maxsize=8)
+def _get_table_data_cached(reload_nonce: int) -> pd.DataFrame:
+    # NOTE: returns a DataFrame; callers should copy() before mutating
+    return update_table_data()
+
+
+def _get_table_data(reload_nonce: int | None) -> pd.DataFrame:
+    global _LAST_GOOD_TABLE_DF
+    try:
+        df = _get_table_data_cached(int(reload_nonce or 0)).copy()
+        if not df.empty:
+            _LAST_GOOD_TABLE_DF = df
+        return df
+    except Exception:
+        logger.exception("Failed to load database entries; serving last known good snapshot.")
+        return _LAST_GOOD_TABLE_DF.copy()
 
 
 def get_database_size() -> str:
-    """Get the overall size of the ASSAS database.
-
-    Returns:
-        str: Overall size of the database in a human-readable format.
-
-    """
-    database_manager = AssasDatabaseManager(
-        database_handler=AssasDatabaseHandler(
-            client=MongoClient(app.config["CONNECTIONSTRING"]),
-            backup_directory=app.config["BACKUP_DIRECTORY"],
-            database_name=app.config["MONGO_DB_NAME"],
+    """Get the overall size of the ASSAS database."""
+    try:
+        database_manager = AssasDatabaseManager(
+            database_handler=AssasDatabaseHandler(
+                client=get_mongo_client(app.config["CONNECTIONSTRING"]),
+                backup_directory=app.config["BACKUP_DIRECTORY"],
+                database_name=app.config["MONGO_DB_NAME"],
+            )
         )
-    )
-    size = database_manager.get_overall_database_size()
-
-    if size is None or len(size) == 0:
+        size = database_manager.get_overall_database_size()
+        if size is None or len(size) == 0:
+            return "0 B"
+        return size
+    except Exception:
+        logger.exception("Failed to get database size.")
         return "0 B"
 
-    return size
 
-
+# IMPORTANT: remove import-time DB calls (breaks gunicorn --preload on transient timeouts)
 table_data = update_table_data()
-database_size = get_database_size()
+#database_size = get_database_size()
 now = pd.Timestamp.now().strftime("%Y-%m-%d %H:%M:%S")
-
 ALL = len(table_data)
 PAGE_SIZE = 30
-PAGE_MAX_SIZE = 100
-
 PAGE_COUNT = ALL / PAGE_SIZE
+#PAGE_COUNT = 1
+PAGE_MAX_SIZE = 100
 
 dash.register_page(__name__, path="/database")
 
@@ -644,7 +964,7 @@ def layout() -> html.Div:
                                                                                                         [
                                                                                                             html.Li(
                                                                                                                 "Open 'Database Tools' section above",
-                                                                                                                className="mb-1",
+                                                                                                                className="mb-1",                                                             
                                                                                                                 style={
                                                                                                                     "fontSize": "clamp(0.7rem, 1.8vw, 0.8rem)"
                                                                                                                 },
@@ -1069,11 +1389,12 @@ def layout() -> html.Div:
                                                                                                         },
                                                                                                     ),
                                                                                                     html.Td(
-                                                                                                        database_size,
+                                                                                                        "100 TB",
                                                                                                         className="text-end",
                                                                                                         style={
                                                                                                             "fontSize": "clamp(0.7rem, 1.8vw, 0.8rem)"
                                                                                                         },
+                                                                                                        id="storage_used",
                                                                                                     ),
                                                                                                 ]
                                                                                             ),
@@ -1087,7 +1408,7 @@ def layout() -> html.Div:
                                                                                                         },
                                                                                                     ),
                                                                                                     html.Td(
-                                                                                                        "100 TB",
+                                                                                                        "200 TB",
                                                                                                         className="text-end",
                                                                                                         style={
                                                                                                             "fontSize": "clamp(0.7rem, 1.8vw, 0.8rem)"
@@ -1197,88 +1518,6 @@ def layout() -> html.Div:
                                                                 xs=12,
                                                                 md=6,
                                                                 className="d-flex align-items-center mb-2 mb-md-0",
-                                                            ),
-                                                            # Export Buttons Section (Right)
-                                                            dbc.Col(
-                                                                [
-                                                                    html.Div(
-                                                                        [
-                                                                            # Export label (hidden on mobile)
-                                                                            html.Span(
-                                                                                "Export:",
-                                                                                className="me-2 text-muted fw-bold d-none d-lg-inline",
-                                                                                style={
-                                                                                    "fontSize": "0.9rem",
-                                                                                    "alignSelf": "center",
-                                                                                },
-                                                                            ),
-                                                                            # Export buttons group
-                                                                            dbc.ButtonGroup(
-                                                                                [
-                                                                                    dbc.Button(
-                                                                                        [
-                                                                                            html.I(
-                                                                                                className="fas fa-file-csv me-1"
-                                                                                            ),
-                                                                                            html.Span(
-                                                                                                "CSV",
-                                                                                                className="d-none d-md-inline",
-                                                                                            ),
-                                                                                        ],
-                                                                                        id="export-csv-btn",
-                                                                                        color="success",
-                                                                                        outline=True,
-                                                                                        size="sm",
-                                                                                        className="export-btn",
-                                                                                        style={
-                                                                                            "fontSize": "clamp(0.7rem, 1.5vw, 0.8rem)",
-                                                                                            "fontWeight": "600",
-                                                                                            "borderRadius": "0.375rem 0 0 0.375rem",
-                                                                                            "minWidth": "50px",
-                                                                                        },
-                                                                                    ),
-                                                                                    dbc.Button(
-                                                                                        [
-                                                                                            html.I(
-                                                                                                className="fas fa-file-excel me-1"
-                                                                                            ),
-                                                                                            html.Span(
-                                                                                                "Excel",
-                                                                                                className="d-none d-md-inline",
-                                                                                            ),
-                                                                                        ],
-                                                                                        id="export-excel-btn",
-                                                                                        color="success",
-                                                                                        outline=True,
-                                                                                        size="sm",
-                                                                                        className="export-btn",
-                                                                                        style={
-                                                                                            "fontSize": "clamp(0.7rem, 1.5vw, 0.8rem)",
-                                                                                            "fontWeight": "600",
-                                                                                            "borderRadius": "0 0.375rem 0.375rem 0",
-                                                                                            "minWidth": "50px",
-                                                                                        },
-                                                                                    ),
-                                                                                ],
-                                                                                size="sm",
-                                                                            ),
-                                                                        ],
-                                                                        className="d-flex align-items-center justify-content-end",
-                                                                    ),
-                                                                    # Export status
-                                                                    html.Div(
-                                                                        "",
-                                                                        id="export-status-database",
-                                                                        className="text-muted small text-end mt-1",
-                                                                        style={
-                                                                            "fontSize": "0.7rem",
-                                                                            "minHeight": "1rem",
-                                                                        },
-                                                                    ),
-                                                                ],
-                                                                xs=12,
-                                                                md=6,
-                                                                className="d-flex flex-column align-items-end",
                                                             ),
                                                         ],
                                                         className="align-items-center",
@@ -1465,60 +1704,146 @@ def layout() -> html.Div:
                                                         ],
                                                         className="mb-3",
                                                     ),
-                                                    # NEW: Export Options Section (below settings)
                                                     dbc.Row(
                                                         [
                                                             dbc.Col(
                                                                 [
-                                                                    html.Div(
-                                                                        [
-                                                                            html.H6(
-                                                                                [
-                                                                                    html.I(
-                                                                                        className="fas fa-file-export me-2"
-                                                                                    ),
-                                                                                    "Export Options",
-                                                                                ],
-                                                                                className="mb-2 text-secondary",
-                                                                                style={
-                                                                                    "fontSize": "clamp(0.8rem, 2vw, 0.9rem)"
-                                                                                },
-                                                                            ),
-                                                                            dbc.Checklist(
-                                                                                options=[
-                                                                                    {
-                                                                                        "label": "Current page only",
-                                                                                        "value": "current_page",
-                                                                                    },
-                                                                                    {
-                                                                                        "label": "Apply current filters",
-                                                                                        "value": "apply_filters",
-                                                                                    },
-                                                                                    {
-                                                                                        "label": "Include metadata links",
-                                                                                        "value": "include_links",
-                                                                                    },
-                                                                                ],
-                                                                                value=[
-                                                                                    "apply_filters"
-                                                                                ],
-                                                                                id="export-options",
-                                                                                inline=True,
-                                                                                className="export-options-list",
-                                                                                style={
-                                                                                    "fontSize": "clamp(0.7rem, 1.5vw, 0.75rem)",
-                                                                                    "color": "#6c757d",
-                                                                                },
-                                                                            ),
-                                                                        ],
-                                                                        className="export-options-container",
+                                                                    dbc.Card(
+                                                                        dbc.CardBody(
+                                                                            [
+                                                                                dbc.Row(
+                                                                                    [
+                                                                                        # LEFT: export options
+                                                                                        dbc.Col(
+                                                                                            [
+                                                                                                html.Div(
+                                                                                                    [
+                                                                                                        html.H6(
+                                                                                                            [
+                                                                                                                html.I(className="fas fa-sliders-h me-2"),
+                                                                                                                "Export Options",
+                                                                                                            ],
+                                                                                                            className="mb-2 text-secondary",
+                                                                                                            style={
+                                                                                                                "fontSize": "clamp(0.8rem, 2vw, 0.9rem)",
+                                                                                                                "whiteSpace": "nowrap",
+                                                                                                            },
+                                                                                                        ),
+                                                                                                        dbc.Checklist(
+                                                                                                            options=[
+                                                                                                                {"label": "Current page only", "value": "current_page"},
+                                                                                                                {"label": "Apply current filters", "value": "apply_filters"},
+                                                                                                                {"label": "Include metadata links", "value": "include_links"},
+                                                                                                            ],
+                                                                                                            value=["apply_filters"],
+                                                                                                            id="export-options",
+                                                                                                            inline=True,
+                                                                                                            className="export-options-list mb-0",
+                                                                                                            style={
+                                                                                                                "fontSize": "clamp(0.7rem, 1.5vw, 0.75rem)",
+                                                                                                                "color": "#6c757d",
+                                                                                                            },
+                                                                                                        ),
+                                                                                                    ],
+                                                                                                    className="d-flex flex-column",
+                                                                                                )
+                                                                                            ],
+                                                                                            xs=12,
+                                                                                            md=8,
+                                                                                            className="mb-3 mb-md-0",
+                                                                                        ),
+
+                                                                                        # RIGHT: buttons + status below (right-aligned)
+                                                                                        dbc.Col(
+                                                                                            [
+                                                                                                html.Div(
+                                                                                                    [
+                                                                                                        html.Div(
+                                                                                                            [
+                                                                                                                html.Span(
+                                                                                                                    "Export:",
+                                                                                                                    className="me-2 text-muted fw-bold d-none d-lg-inline",
+                                                                                                                    style={
+                                                                                                                        "fontSize": "0.9rem",
+                                                                                                                        "alignSelf": "center",
+                                                                                                                    },
+                                                                                                                ),
+                                                                                                                dbc.ButtonGroup(
+                                                                                                                    [
+                                                                                                                        dbc.Button(
+                                                                                                                            [
+                                                                                                                                html.I(className="fas fa-file-csv me-1"),
+                                                                                                                                html.Span("CSV", className="d-none d-md-inline"),
+                                                                                                                            ],
+                                                                                                                            id="export-csv-btn-database",
+                                                                                                                            color="success",
+                                                                                                                            outline=True,
+                                                                                                                            size="sm",
+                                                                                                                            className="export-btn",
+                                                                                                                            style={
+                                                                                                                                "fontSize": "clamp(0.7rem, 1.5vw, 0.8rem)",
+                                                                                                                                "fontWeight": "600",
+                                                                                                                                "minWidth": "70px",
+                                                                                                                            },
+                                                                                                                        ),
+                                                                                                                        dbc.Button(
+                                                                                                                            [
+                                                                                                                                html.I(className="fas fa-file-excel me-1"),
+                                                                                                                                html.Span("Excel", className="d-none d-md-inline"),
+                                                                                                                            ],
+                                                                                                                            id="export-excel-btn",
+                                                                                                                            color="success",
+                                                                                                                            outline=True,
+                                                                                                                            size="sm",
+                                                                                                                            className="export-btn",
+                                                                                                                            style={
+                                                                                                                                "fontSize": "clamp(0.7rem, 1.5vw, 0.8rem)",
+                                                                                                                                "fontWeight": "600",
+                                                                                                                                "minWidth": "70px",
+                                                                                                                            },
+                                                                                                                        ),
+                                                                                                                    ],
+                                                                                                                    size="sm",
+                                                                                                                ),
+                                                                                                            ],
+                                                                                                            className="d-flex align-items-center justify-content-md-end",
+                                                                                                            style={"whiteSpace": "nowrap"},
+                                                                                                        ),
+                                                                                                        html.Div(
+                                                                                                            "",
+                                                                                                            id="export-status-database",
+                                                                                                            className="text-muted small mt-2 text-md-end",
+                                                                                                            style={
+                                                                                                                "fontSize": "0.75rem",
+                                                                                                                "minHeight": "1rem",
+                                                                                                            },
+                                                                                                        ),
+                                                                                                    ],
+                                                                                                    className="d-flex flex-column",
+                                                                                                )
+                                                                                            ],
+                                                                                            xs=12,
+                                                                                            md=4,
+                                                                                        ),
+                                                                                    ],
+                                                                                    className="g-3 align-items-start align-items-md-center",
+                                                                                ),
+                                                                            ],
+                                                                            style={"padding": "1.25rem"},
+                                                                        ),
+                                                                        style={
+                                                                            "border": "1px solid #dee2e6",
+                                                                            "borderRadius": "12px",
+                                                                            "backgroundColor": "#f8f9fa",
+                                                                        },
+                                                                        className="mb-3",
                                                                     )
                                                                 ],
                                                                 xs=12,
-                                                                className="mb-3",
-                                                            )
+                                                            ),
                                                         ]
                                                     ),
+
                                                     # Enhanced Table Container - Mobile Responsive (existing table code stays the same)
                                                     html.Div(
                                                         [
@@ -1599,6 +1924,7 @@ def layout() -> html.Div:
                                                                         "deletable": False,
                                                                         "renamable": False,
                                                                         "hideable": False,
+                                                                        "sortable": False,
                                                                     },
                                                                     {
                                                                         "name": "System UUID",
@@ -1609,6 +1935,7 @@ def layout() -> html.Div:
                                                                         "renamable": False,
                                                                         "hideable": True,
                                                                         "hidden": True,
+                                                                        "sortable": True,
                                                                     },
                                                                     {
                                                                         "name": "Upload UUID",
@@ -1619,6 +1946,7 @@ def layout() -> html.Div:
                                                                         "renamable": False,
                                                                         "hideable": True,
                                                                         "hidden": True,
+                                                                        "sortable": True,
                                                                     },
                                                                     {
                                                                         "name": "System Path",
@@ -1629,6 +1957,7 @@ def layout() -> html.Div:
                                                                         "renamable": False,
                                                                         "hideable": True,
                                                                         "hidden": True,
+                                                                        "sortable": False,
                                                                     },
                                                                     {
                                                                         "name": "System Result",
@@ -1639,6 +1968,7 @@ def layout() -> html.Div:
                                                                         "renamable": False,
                                                                         "hideable": True,
                                                                         "hidden": True,
+                                                                        "sortable": False,
                                                                     },
                                                                     {
                                                                         "name": "Samples",
@@ -1649,6 +1979,7 @@ def layout() -> html.Div:
                                                                         "renamable": False,
                                                                         "hideable": True,
                                                                         "hidden": True,
+                                                                        "sortable": True,
                                                                     },
                                                                     {
                                                                         "name": "Completed Samples",
@@ -1659,6 +1990,29 @@ def layout() -> html.Div:
                                                                         "renamable": False,
                                                                         "hideable": True,
                                                                         "hidden": True,
+                                                                        "sortable": True,
+                                                                    },
+                                                                    {
+                                                                        "name": "Description",
+                                                                        "id": "description",
+                                                                        "selectable": True,
+                                                                        "type": "text",
+                                                                        "deletable": False,
+                                                                        "renamable": False,
+                                                                        "hideable": True,
+                                                                        "hidden": True,
+                                                                        "sortable": False,
+                                                                    },
+                                                                    {
+                                                                        "name": "Meta Description",
+                                                                        "id": "meta_description",
+                                                                        "selectable": True,
+                                                                        "type": "text",
+                                                                        "deletable": False,
+                                                                        "renamable": False,
+                                                                        "hideable": True,
+                                                                        "hidden": True,
+                                                                        "sortable": False,
                                                                     },
                                                                 ],
                                                                 data=[],
@@ -1672,6 +2026,8 @@ def layout() -> html.Div:
                                                                     "system_result",
                                                                     "system_number_of_samples",
                                                                     "system_number_of_samples_completed",
+                                                                    "description",
+                                                                    "meta_description",
                                                                 ],
                                                                 sort_action="custom",
                                                                 sort_mode="multi",
@@ -1820,6 +2176,22 @@ def layout() -> html.Div:
                                                                         "selector": ".dash-table-container table",
                                                                         "rule": "min-width: 800px !important;",
                                                                     },
+                                                                    {
+                                                                        "selector": 'th[data-dash-column="description"] .column-header--sort,'
+                                                                                    'th[data-dash-column="meta_description"] .column-header--sort,'
+                                                                                    'th[data-dash-column="system_download"] .column-header--sort,'
+                                                                                    'th[data-dash-column="system_path"] .column-header--sort,'
+                                                                                    'th[data-dash-column="system_result"] .column-header--sort',
+                                                                        "rule": "display: none !important;",
+                                                                    },
+                                                                    {
+                                                                        "selector": 'th[data-dash-column="description"],'
+                                                                                    'th[data-dash-column="meta_description"],'
+                                                                                    'th[data-dash-column="system_download"],'
+                                                                                    'th[data-dash-column="system_path"],'
+                                                                                    'th[data-dash-column="system_result"]',
+                                                                        "rule": "cursor: default !important;",
+                                                                    },
                                                                 ],
                                                             )
                                                         ],
@@ -1878,6 +2250,29 @@ def layout() -> html.Div:
     )
 
     return return_div
+
+
+def load_table_data_2():
+    # TODO: replace with your real fetch (db query, API call, etc.)
+    # must return a list of rows (dicts) or whatever your app expects
+    return [{"id": 1}, {"id": 2}]
+
+
+@callback(
+    Output("table_data_store", "data"),
+    Input("reload_page", "n_clicks"),
+    prevent_initial_call=True,
+)
+def reload_table_data(_n: int) -> list[dict]:
+    return load_table_data_2()
+
+
+@callback(
+    Output("dataset_count", "children"),
+    Input("table_data_store", "data"),
+)
+def update_dataset_count(data: list[dict]) -> str:
+    return str(len(data or []))
 
 
 @callback(
@@ -2082,101 +2477,6 @@ def start_download(clicks: int, rows: List, ids: List, data: List) -> tuple:
         return True, "No rows selected for download.", no_href_link
 
 
-def split_filter_part(filter_part: str) -> List[str]:
-    """Split a filter part into name, operator, and value.
-
-    Args:
-        filter_part (str): The filter part to split, e.g., "{name} contains 'value'".
-
-    Returns:
-        List[str]: A list containing the name, operator, and value.
-            If no operator is found, returns [None, None, None].
-
-    """
-    logger.info(f"Operators: {operators}")
-    logger.info(f"Filter part: {filter_part}")
-
-    for operator_type in operators:
-        for operator in operator_type:
-            if operator in filter_part:
-                name_part, value_part = filter_part.split(operator, 1)
-                name = name_part[name_part.find("{") + 1 : name_part.rfind("}")]
-
-                value_part = value_part.strip()
-                v0 = value_part[0]
-
-                if v0 == value_part[-1] and v0 in (""", """, "`"):
-                    value = value_part[1:-1].replace("\\" + v0, v0)
-                else:
-                    try:
-                        value = float(value_part)
-                    except ValueError:
-                        value = value_part
-
-                # word operators need spaces after them in the filter string,
-                # but we don't want these later
-                return name, operator_type[0].strip(), value
-
-    return [None] * 3
-
-
-def apply_filters(dataframe: pd.DataFrame, filter_query: str) -> pd.DataFrame:
-    """Apply filters to the dataframe based on filter query.
-
-    Args:
-        dataframe (pd.DataFrame): The dataframe to filter
-        filter_query (str): The filter query string
-
-    Returns:
-        pd.DataFrame: Filtered dataframe
-
-    """
-    if not filter_query:
-        return dataframe
-
-    filtering_expressions = filter_query.split(" && ")
-
-    for filter_part in filtering_expressions:
-        col_name, operator, filter_value = split_filter_part(filter_part)
-
-        if col_name is None or operator is None:
-            continue
-
-        try:
-            if operator == "eq":
-                dataframe = dataframe.loc[dataframe[col_name] == filter_value]
-            elif operator == "ne":
-                dataframe = dataframe.loc[dataframe[col_name] != filter_value]
-            elif operator == "lt":
-                dataframe = dataframe.loc[dataframe[col_name] < filter_value]
-            elif operator == "le":
-                dataframe = dataframe.loc[dataframe[col_name] <= filter_value]
-            elif operator == "gt":
-                dataframe = dataframe.loc[dataframe[col_name] > filter_value]
-            elif operator == "ge":
-                dataframe = dataframe.loc[dataframe[col_name] >= filter_value]
-            elif operator == "contains":
-                if col_name in dataframe.columns:
-                    # Convert to string for contains operation
-                    dataframe = dataframe.loc[
-                        dataframe[col_name]
-                        .astype(str)
-                        .str.contains(str(filter_value), case=False, na=False)
-                    ]
-            elif operator == "datestartswith":
-                if col_name in dataframe.columns:
-                    dataframe = dataframe.loc[
-                        dataframe[col_name]
-                        .astype(str)
-                        .str.startswith(str(filter_value))
-                    ]
-        except Exception as e:
-            logger.warning(f"Error applying filter {filter_part}: {e}")
-            continue
-
-    return dataframe
-
-
 @callback(
     [
         Output("datatable-paging-and-sorting", "data"),
@@ -2222,25 +2522,48 @@ def update_table_with_pagination(
         sort_by = []
 
     # Get fresh data (especially important after refresh)
-    dataframe = update_table_data()
-    logger.info(f"Loaded {len(dataframe)} records from database")
+    dataframe = _get_table_data(n_clicks)
+    dataframe = _ensure_sort_helpers(dataframe)
+    logger.info(f"Loaded {len(dataframe)} records from database.")
 
     # Apply filtering using enhanced function
     if filter_query:
-        logger.info(f"Applying filter: {filter_query}")
         dataframe = apply_filters(dataframe, filter_query)
-        logger.info(f"After filtering: {len(dataframe)} records")
 
-    # Apply sorting
-    if len(sort_by):
-        logger.info(f"Applying sort: {sort_by}")
+    sort_map = {
+        "system_date": "system_date_sort",
+        "system_size": "system_size_bytes",
+        "system_size_hdf5": "system_size_hdf5_bytes",
+        "meta_name": "meta_name_sort",
+        "system_number_of_samples": "system_number_of_samples_num",
+        "system_number_of_samples_completed": "system_number_of_samples_completed_num",
+        "system_uuid": "system_uuid_sort",
+        "system_upload_uuid": "system_upload_uuid_sort",
+    }
+
+    if sort_by:
         try:
-            dataframe = dataframe.sort_values(
-                [col["column_id"] for col in sort_by],
-                ascending=[col["direction"] == "asc" for col in sort_by],
-                inplace=False,
-            )
-            logger.info("Sorting applied successfully")
+            sort_cols: list[str] = []
+            ascending: list[bool] = []
+            for s in sort_by:
+                col_id = s.get("column_id")
+
+                # NEW: disable sorting for non-allowed (including most hidden) columns
+                if col_id not in _SORTABLE_COLUMNS:
+                    continue
+
+                sort_col = sort_map.get(col_id, col_id)
+                if sort_col in dataframe.columns:
+                    sort_cols.append(sort_col)
+                    ascending.append(s.get("direction") == "asc")
+
+            if sort_cols:
+                dataframe = dataframe.sort_values(
+                    sort_cols,
+                    ascending=ascending,
+                    inplace=False,
+                    na_position="last",
+                )
         except Exception as e:
             logger.warning(f"Error applying sort: {e}")
 
@@ -2298,7 +2621,7 @@ def update_pagination_max_value(
         page_size = PAGE_SIZE
 
     # Get fresh data
-    dataframe = update_table_data()
+    dataframe = _get_table_data(n_clicks)
 
     # Apply filtering to get accurate count
     if filter_query:
@@ -2475,31 +2798,47 @@ def handle_mobile_navigation(
     return new_page, prev_disabled, next_disabled
 
 
-# Add these callback functions for export functionality
-
-
-def prepare_export_data(filter_query, sort_by, export_options):
+def prepare_export_data(filter_query, sort_by, export_options, reload_nonce: int = 0):
     """Prepare data for export with filters and sorting applied."""
     try:
-        # Get fresh data
-        df = update_table_data()
+        df = _get_table_data(reload_nonce)
+        df = _ensure_sort_helpers(df)
 
-        # Apply filters if requested
-        if "apply_filters" in export_options and filter_query:
+        if "apply_filters" in (export_options or []) and filter_query:
             df = apply_filters(df, filter_query)
 
-        # Apply sorting if requested
+        # NEW: keep export sorting consistent with UI sorting + restrictions
+        sort_map = {
+            "system_date": "system_date_sort",
+            "system_size": "system_size_bytes",
+            "system_size_hdf5": "system_size_hdf5_bytes",
+            "meta_name": "meta_name_sort",
+            "system_number_of_samples": "system_number_of_samples_num",
+            "system_number_of_samples_completed": \
+                "system_number_of_samples_completed_num",
+            "system_uuid": "system_uuid_sort",
+            "system_upload_uuid": "system_upload_uuid_sort",
+        }
+
         if sort_by and len(sort_by) > 0:
-            df = df.sort_values(
-                [col["column_id"] for col in sort_by],
-                ascending=[col["direction"] == "asc" for col in sort_by],
-                inplace=False,
-            )
+            sort_cols = []
+            ascending = []
+            for col in sort_by:
+                col_id = col.get("column_id")
+                if col_id not in _SORTABLE_COLUMNS:
+                    continue
+                sort_cols.append(sort_map.get(col_id, col_id))
+                ascending.append(col.get("direction") == "asc")
+
+            sort_cols = [c for c in sort_cols if c in df.columns]
+            if sort_cols:
+                df = df.sort_values(
+                    sort_cols, ascending=ascending[: len(sort_cols)], inplace=False)
 
         return df
     except Exception as e:
         logger.error(f"Error preparing export data: {e}")
-        return pd.DataFrame()  # Return empty DataFrame on error
+        return pd.DataFrame()
 
 
 def clean_data_for_export(df, export_options):
@@ -2548,6 +2887,8 @@ def clean_data_for_export(df, export_options):
             "system_size_hdf5": "HDF5 Size",
             "system_download": "Download Status",
             "system_uuid": "UUID",
+            "description": "Description",
+            "meta_description": "Meta Description",
         }
 
         # Rename columns that exist in the dataframe
@@ -2633,60 +2974,91 @@ def add_metadata_sheet_basic(writer, filter_query, sort_by, export_options):
 @callback(
     [
         Output("download-csv-database", "data"),
-        Output("export-status-database", "children"),
+        Output("export-status-database", "children", allow_duplicate=True),
     ],
-    Input("export-csv-btn", "n_clicks"),
+    Input("export-csv-btn-database", "n_clicks"),
     [
         State("datatable-paging-and-sorting", "derived_viewport_data"),
         State("datatable-paging-and-sorting", "data"),
         State("datatable-paging-and-sorting", "filter_query"),
         State("datatable-paging-and-sorting", "sort_by"),
         State("export-options", "value"),
+        State("reload_page", "n_clicks"),
     ],
     prevent_initial_call=True,
 )
 def export_csv(
-    n_clicks, current_page_data, all_data, filter_query, sort_by, export_options
-):
+    n_clicks: int,
+    current_page_data: List[dict],
+    all_data: List[dict],
+    filter_query: str,
+    sort_by: List[dict],
+    export_options: List[str],
+    reload_nonce: int,
+) -> Tuple[dict | None, str]:
+    logger.info("CSV export initiated.")
     if not n_clicks:
         raise PreventUpdate
 
     try:
         export_options = export_options or []
 
-        # Determine what data to export
         if "current_page" in export_options:
             export_data = current_page_data or []
             status_msg = f"✅ Exported {len(export_data)} records (current page) to CSV"
         else:
-            # Get all data with current filters and sorting
-            df = prepare_export_data(filter_query, sort_by, export_options)
+            df = prepare_export_data(
+                filter_query, sort_by, export_options, reload_nonce=reload_nonce
+            )
             export_data = df.to_dict("records")
             status_msg = f"✅ Exported {len(export_data)} records to CSV"
 
         if not export_data:
             logger.warning("No data to export")
-            return dash.no_update, "⚠️ No data to export"
+            return dash.no_update, "No data to export"
 
-        # Convert to DataFrame for CSV export
         df_export = pd.DataFrame(export_data)
-
-        # Clean data for export
         df_export = clean_data_for_export(df_export, export_options)
 
-        # Generate timestamp for filename
         timestamp = pd.Timestamp.now().strftime("%Y%m%d_%H%M%S")
         filename = f"assas_database_export_{timestamp}.csv"
 
-        # Create CSV download
-        csv_string = df_export.to_csv(index=False, encoding="utf-8")
-
-        return dict(content=csv_string, filename=filename), status_msg
+        # FIX: send_data_frame expects a function, not a prebuilt string
+        return (
+            dcc.send_data_frame(df_export.to_csv, filename, index=False, encoding="utf-8"),
+            status_msg,
+        )
 
     except Exception as e:
         logger.error(f"CSV export error: {e}")
         return dash.no_update, f"❌ Export failed: {str(e)}"
 
+def _make_excel_safe(df: pd.DataFrame) -> pd.DataFrame:
+    """Excel can't handle timezone-aware datetimes. Convert them to tz-naive."""
+    if df.empty:
+        return df
+
+    out = df.copy()
+
+    for col in out.columns:
+        s = out[col]
+
+        # tz-aware datetime dtype (e.g. datetime64[ns, UTC])
+        if pd.api.types.is_datetime64tz_dtype(s):
+            out[col] = s.dt.tz_convert(None)
+            continue
+
+        # object columns might contain tz-aware pd.Timestamp objects
+        if pd.api.types.is_object_dtype(s):
+
+            def _strip_tz(v: object) -> object:
+                if isinstance(v, pd.Timestamp) and v.tz is not None:
+                    return v.tz_convert(None)
+                return v
+
+            out[col] = s.map(_strip_tz)
+
+    return out
 
 @callback(
     [
@@ -2700,72 +3072,62 @@ def export_csv(
         State("datatable-paging-and-sorting", "filter_query"),
         State("datatable-paging-and-sorting", "sort_by"),
         State("export-options", "value"),
+        State("reload_page", "n_clicks"),  # NEW: cache key for Excel export too
     ],
     prevent_initial_call=True,
 )
 def export_excel(
-    n_clicks, current_page_data, all_data, filter_query, sort_by, export_options
-):
-    """Export table data to Excel format."""
+    n_clicks: int,
+    current_page_data: List[dict],
+    all_data: List[dict],
+    filter_query: str,
+    sort_by: List[dict],
+    export_options: List[str],
+    reload_nonce: int,
+) -> Tuple[dict | None, str]:
+    logger.info("Excel export initiated.")
     if not n_clicks:
         raise PreventUpdate
 
     try:
         export_options = export_options or []
 
-        # Determine what data to export
         if "current_page" in export_options:
             export_data = current_page_data or []
-            status_msg = (
+            status_msg = \
                 f"✅ Exported {len(export_data)} records (current page) to Excel"
-            )
         else:
-            # Get all data with current filters and sorting
-            df = prepare_export_data(filter_query, sort_by, export_options)
-            export_data = df.to_dict("records")
+            dataframe = prepare_export_data(
+                filter_query, sort_by, export_options, reload_nonce=reload_nonce
+            )
+            export_data = dataframe.to_dict("records")
             status_msg = f"✅ Exported {len(export_data)} records to Excel"
 
         if not export_data:
             return dash.no_update, "⚠️ No data to export"
 
-        # Convert to DataFrame for Excel export
         df_export = pd.DataFrame(export_data)
-
-        # Clean data for export
         df_export = clean_data_for_export(df_export, export_options)
+        df_export = _make_excel_safe(df_export)
 
-        # Generate timestamp for filename
         timestamp = pd.Timestamp.now().strftime("%Y%m%d_%H%M%S")
         filename = f"assas_database_export_{timestamp}.xlsx"
 
-        # 🔧 FIX: Create Excel file in memory with proper encoding
         buffer = io.BytesIO()
-
         with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
-            # Main data sheet
             df_export.to_excel(writer, sheet_name="ASSAS Database", index=False)
-
-            # Get workbook and worksheet for formatting
             workbook = writer.book
             worksheet = workbook["ASSAS Database"]
-
-            # Apply basic formatting
             format_excel_export_basic(worksheet, df_export)
-
-            # Add metadata sheet
             add_metadata_sheet_basic(writer, filter_query, sort_by, export_options)
 
-        # 🔧 FIX: Encode binary data to base64 for JSON serialization
         buffer.seek(0)
-        excel_data = buffer.getvalue()
-
-        # Encode to base64 string for JSON serialization
-        encoded_data = base64.b64encode(excel_data).decode("utf-8")
+        encoded_data = base64.b64encode(buffer.getvalue()).decode("utf-8")
 
         return {
             "content": encoded_data,
             "filename": filename,
-            "base64": True,  # Tell Dash this is base64 encoded
+            "base64": True,
             "type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         }, status_msg
 
