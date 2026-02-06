@@ -61,9 +61,9 @@
 
 - **Project website:** https://assas-horizon-euratom.eu
 - **ASSAS Data Hub (Home):** https://assas.scc.kit.edu/assas_app/home
-- **Database view (datasets):** https://assas.scc.kit.edu/assas_app/database
-- **REST API base path:** https://assas.scc.kit.edu/assas_app
-- **REST API datasets:** https://assas.scc.kit.edu/assas_app/datasets
+- **Database View (Datasets):** https://assas.scc.kit.edu/assas_app/database
+- **REST API Base Path:** https://assas.scc.kit.edu/assas_app
+- **REST API Datasets:** https://assas.scc.kit.edu/assas_app/datasets
 - **Tools (CLI):** see [Tools](#tools) (`tools/assas_data_uploader.py`, `tools/assas_data_downloader.py`)
 
 ## Content
