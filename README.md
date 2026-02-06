@@ -1,4 +1,3 @@
-
 <div align="center">
   <table role="presentation" cellspacing="24" cellpadding="0">
     <tr>
@@ -346,16 +345,16 @@ The database can be inspected under **Database page:** https://assas.scc.kit.edu
 The database view displays a list with all available datasets and provides the following parameters:
 
 * ``Index``: Unique index of dataset
-* ``Size``: Size of ASTEC binary archive
-* ``Size hdf5``: Size of the hdf5 file after conversion
-* ``Date``: Date of the upload time
+* ``Binary Size``: Size of ASTEC binary archive
+* ``HDF5 Size``: Size of the HDF5 file after conversion
+* ``Date``: Upload time
 * ``User``: User which has uploaded the dataset
 * ``Status``: Status of the uploaded dataset
 * ``Name``: Given name of the uploaded dataset
 
-By click on the column cell ``File`` the user can download the hdf5 file.  
+By clicking on the column cell ``File`` the user can download the HDF5 file.
 
-By click on the parameter ``Name`` the user comes to a detailed view with following meta information about the dataset.
+By clicking on the parameter ``Name`` the user is taken to a detailed view with the following meta information about the dataset.
 
 ### Status
 
@@ -364,21 +363,14 @@ A database entry can have the following states:
 * ``UPLOADED``: Direct after the upload the database entry is in this state.
 * ``CONVERTING``: After the upload the conversion and post-processing will be started automatically.
 * ``VALID``: If the conversion and the post-processing were successful the database entry is in a valid state.
-* ``INVALID``: If the conversion and the post-processing were unsuccessful the database entry is in a valid state.
-
-### General
-
-* ``Title``: Human-readable dataset title (RADAR metadata attribute ``meta_title``)
-* ``Technical Name``: Stable identifier / short name shown in the database view (metadata attribute ``meta_name``)
-* ``Description``: Free-text notes about the dataset (metadata attribute ``meta_description``)
-* ``Created At``: Timestamp when the dataset was uploaded/registered (server time)
+* ``INVALID``: If the conversion and the post-processing were unsuccessful the database entry is in an invalid state.
 
 ### Data
 
 The following meta information is extracted during the upload and conversion process:
 
 * Variables: List of extracted variables
-* Channels: Number of ectracted channels
+* Channels: Number of extracted channels
 * Meshes: Number of extracted meshes
 * Samples: Number of extracted samples
 
@@ -387,8 +379,48 @@ The following meta information is extracted during the upload and conversion pro
 Some parts of the ASSAS Data Hub may require authentication (login).
 
 * **Database page:** https://assas.scc.kit.edu/assas_app/database/
-* **Login:** https://assas.scc.kit.edu/auth/basic/login (API endpoint used by tools; if your deployment provides a GUI login page, use that URL instead)
-* **Contact:** `/assas_app/contact` (adjust if your deployment uses a different contact URL)
+* **Login (Basic auth endpoint used by tools):** https://assas.scc.kit.edu/auth/basic/login. If your deployment provides a GUI login page, use that URL instead.
+* **Contact:** Visit our https://assas.scc.kit.edu/assas_app/home for more information.
+* **Email:** Email contact if access is needed contact [jonas.dresssner@kit.edu](mailto:jonas.dresssner@kit.edu).
+
+### Authentication methods
+
+Depending on the deployment, the ASSAS Data Hub can support multiple authentication methods.
+
+**1. Basic authentication (username/password)**
+
+**What it is:** A simple login using a username + password, primarily intended for **API clients and CLI tools**.
+
+**How it works (high-level):**
+- The client sends credentials to the **Basic login endpoint** (`/auth/basic/login`).
+- On success, the server typically returns an authenticated **session** (commonly via cookies).
+- Subsequent API calls reuse that session.
+
+**When to use it:**
+- Command-line tools like the uploader/downloader or other automated clients.
+- Local/dev setups where SSO is not configured.
+
+**Notes:**
+- The exact request/response format can differ between deployments (session cookie vs token-style responses).
+- Prefer using the provided tools (they implement the expected login flow for this app).
+
+**2 .Helmholtz authentication (Helmholtz AAI / SSO)**
+
+**What it is:** Single Sign-On (SSO) via the Helmholtz Authentication and Authorization Infrastructure (AAI)
+(typically OpenID Connect/OAuth2-based), using your institutional identity (e.g., “Helmholtz ID”).
+
+**How it works (high-level):**
+- You open the Data Hub in a browser.
+- You are redirected to the Helmholtz login page to authenticate.
+- After login, you are redirected back to the Data Hub with an SSO session established.
+
+**When to use it:**
+- Interactive browser use in institutional deployments.
+- Deployments where Basic auth is disabled or restricted.
+
+**Notes:**
+- SSO endpoints/URLs are deployment-specific (reverse proxy / identity provider configuration).
+- CLI tools usually do **not** use the interactive SSO flow unless a dedicated non-interactive token flow is provided by the deployment.
 
 ## Tools
 

@@ -604,8 +604,8 @@ def meta_technical_metadata_table(
     candidates: list[tuple[str, object]] = [
         ("Upload UUID", (upload_info or {}).get("upload_uuid")),
         ("System UUID", document.get("system_uuid") or document.get("system_id")),
+        ("Binary Size", document.get("system_size")),
         ("HDF5 Size", document.get("system_size_hdf5")),
-        ("System Size", document.get("system_size")),
         (
             "Created At",
             document.get("created_at")
