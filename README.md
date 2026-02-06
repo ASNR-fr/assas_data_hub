@@ -1,15 +1,40 @@
+
 <div align="center">
-  <table>
+  <table role="presentation" cellspacing="24" cellpadding="0">
     <tr>
-      <td align="center" valign="middle" style="padding-right: 16px;">
-        <a href="https://assas-horizon-euratom.eu/">
-          <img src="./flask_app/dash_app/assets/assas_logo_mod.svg" height="100px">
-        </a>
+      <td align="center" valign="middle">
+        <table role="presentation" border="1" cellspacing="0" cellpadding="12">
+          <tr>
+            <td align="center" valign="middle">
+              <a href="https://assas-horizon-euratom.eu/">
+                <img
+                  src="./flask_app/dash_app/assets/assas_logo_mod.svg"
+                  alt="ASSAS"
+                  height="96"
+                />
+                <br />
+                <sub><em>ASSAS Project</em></sub>
+              </a>
+            </td>
+          </tr>
+        </table>
       </td>
-      <td align="center" valign="middle" style="padding-left: 16px;">
-        <a href="http://www.kit.edu/english/index.php">
-          <img src="./flask_app/dash_app/assets/assas_logo.svg" height="100px">
-        </a>
+      <td align="center" valign="middle">
+        <table role="presentation" border="1" cellspacing="0" cellpadding="12">
+          <tr>
+            <td align="center" valign="middle">
+              <a href="http://www.kit.edu/english/index.php">
+                <img
+                  src="./flask_app/dash_app/assets/assas_logo.svg"
+                  alt="KIT"
+                  height="96"
+                />
+                <br />
+                <sub><em>Karlsruhe Institute of Technology (KIT)</em></sub>
+              </a>
+            </td>
+          </tr>
+        </table>
       </td>
     </tr>
   </table>
@@ -23,18 +48,19 @@ The ASSAS Data Hub is a web application to store and visualize ASTEC simulation 
 
 - [Prequisites](#prequisites)
 - [Installation](#installation)
-- [Upload ASTEC Data](#upload-astec-data)
+- [Upload of ASTEC Data](#upload-of-astec-data)
 - [Database View](#database-view)
 - [Tools](#tools)
 - [RESTful API](#restful-api)
+- [Curator Tools](#curator-tools)
 
-## Prerequisites
+## Prequisites
 
 The ASSAS Data Hub is a flask web application, which requires the following additional software packages:
 
 * [MongoDB Version 7.0.6](https://www.mongodb.com/docs/manual/release-notes/7.0/)
 * [Python3.11 virtual environment](https://docs.python.org/3/library/venv.html)
-* [ASTEC V3.1.1 installation](https://gforge.irsn.fr/?lang=en#/project/astec/frs/7574/details)
+* [ASTEC V3.1.1/V3.1.2 installation](https://gforge.irsn.fr/?lang=en#/project/astec/frs/7574/details)
 * [Cron 1.5.2](https://wiki.ubuntuusers.de/Cron/)
 
 ## Installation
@@ -47,21 +73,53 @@ Entrypoint of the application is wsgi.py (Python Web Server Gateway Interface) a
 $ python wsgi.py
 ```
 
-The application starts as a custom flask app. Available under:
-[http://assas.scc.kit.edu:5000/assas_app/home](http://assas.scc.kit.edu:5000/assas_app/home)
-on a virtual machine inside the KIT infrastructure.
+The application starts as a custom flask app. Available under 
+[https://assas.scc.kit.edu/assas_app/home](https://assas.scc.kit.edu/assas_app/home)
+on a virtual machine inside as the ASSAS Server inside the KIT infrastructure.
 
 ### NoSQL Database
 
-Runs on ``CONNECTIONSTRING = r'mongodb://localhost:27017/'``.
+Local db runs on ``CONNECTIONSTRING = r'mongodb://localhost:27017/'``.
 
-Restart NoSQL Database:
+MongoDB typically stores its data under `/var/lib/mongodb` and is configured via `/etc/mongod.conf` (paths can differ depending on your system/package).
+
+Restart MongoDB:
 
 ```console
-$ service mongod restart
+# systemd-based systems (recommended)
+$ sudo systemctl restart mongod
+$ sudo systemctl status mongod --no-pager
+
+# legacy SysV style (if systemctl is not available)
+$ sudo service mongod restart
 ```
 
-### Mount lsdf share
+The application supports **two MongoDB deployment options**:
+
+1. **MongoDB Atlas (recommended / production)** — managed cluster in MongoDB Atlas
+2. **Local MongoDB (optional / development)** — local daemon on the same machine
+
+The connection is configured via the application connection string.
+
+**Local example:**
+
+```
+CONNECTIONSTRING = r"mongodb://localhost:27017/"
+```
+
+**Atlas example (template):**
+
+```
+CONNECTIONSTRING = r"mongodb+srv://<USER>:<PASSWORD>@<CLUSTER>/<DB_NAME>?retryWrites=true&w=majority"
+```
+
+#### Backups
+
+- **Atlas:** Backups are typically handled by Atlas (depending on the configured Atlas backup settings for the project/cluster).
+- **Local MongoDB:** Backups are created automatically by an **internal backup tool** running as a **cron job** on the server. The cron job executes `assas_backup_job.py`, which creates MongoDB logical backups (e.g., via `mongodump`) and stores them on the **LSDF** according to the configured retention policy.
+
+
+### Mount LSDF share
 
 The following command mounts the LSDF on the server system for the user ``USER``:
 
@@ -69,11 +127,153 @@ The following command mounts the LSDF on the server system for the user ``USER``
 $ sudo mount -t cifs -o vers=2.0,username='USER',uid=$(id -u),gid=$(id -g) //os.lsdf.kit.edu/kit/scc/projects/ASSAS /mnt/ASSAS
 ```
 
+### Cron Jobs
+
+The ASSAS Data Hub uses **three server-side cron jobs**:
+
+1. **Process job** — The script `assasdb/cron_jobs/assas_process_job.py` picks up newly uploaded datasets and starts the conversion pipeline.
+2. **Validation job** —  The script `assasdb/cron_jobs/assas_validation_job.py` validates conversion outputs and finalizes dataset status/metadata.
+3. **Backup job** — The script `assasdb/cron_jobs/assas_backup_job.py` creates regular MongoDB backups and stores them on the LSDF.
+
+Cron jobs are typically configured via `crontab -e` (user crontab) or under `/etc/cron.d/*` (system-wide).
+
+**1. Process Job**
+
+**Purpose:** 
+
+Checks if there are new uploads, add them them to the internal database in status `UPLOADED`.
+
+**Typical steps:**
+- query DB for new uploads
+- set status to `UPLOADED`
+- run conversion (e.g., ASTEC archive → HDF5) and post-processing
+- write logs and intermediate results for the next step (validation)
+
+**Outcome:** dataset remains `UPLOADED` until the validation job confirms the results.
+
+**2. Validation Job**
+
+**Purpose:** Final quality gate after processing. Validates produced artifacts and extracted metadata, then sets the final status.
+
+**Typical checks:**
+- expected output files exist (e.g., generated HDF5)
+- files are readable and non-empty; basic integrity checks
+- required metadata fields are present
+- conversion/processing logs contain no fatal errors
+
+**Outcome:**
+- `VALID` if checks pass
+- `INVALID` if checks fail (with errors available in logs / server-side diagnostics)
+
+**3. Backup Job (LSDF)**
+
+**Purpose:** Regular database backups for **local MongoDB deployments**.
+
+- Executed as a cron job running `assas_backup_job.py`
+- Creates MongoDB logical backups (e.g., via `mongodump`)
+- Stores backups on the **LSDF**
+- Applies the configured retention policy (prunes old backups)
+
+**Inspecting the configured jobs**
+
+```console
+$ crontab -l
+$ sudo ls -la /etc/cron.d
+$ sudo cat /etc/crontab
+```
+
+Search for the backup script specifically:
+
+```console
+$ sudo grep -R "assas_backup_job.py" -n /etc/cron.d /etc/crontab 2>/dev/null || true
+$ crontab -l | grep -n "assas_backup_job.py" || true
+```
+
 ### Reverse-proxy configuration
 
-## Upload of ASTEC data
+In production, the app is typically run as a **systemd service** (Gunicorn) and exposed via **nginx** (reverse proxy).
 
-The upload of ASTEC data is supported through an upload application under ``tools/assas_data_uploader.py``.  
+**1. Install nginx (and enable it)**
+
+```console
+$ sudo apt-get update
+$ sudo apt-get install -y nginx
+$ sudo systemctl enable --now nginx
+$ sudo systemctl status nginx --no-pager
+```
+
+**2. Create a systemd service for the application (Gunicorn)**
+
+This runs the Flask app via the WSGI entrypoint (`wsgi:app`) on `127.0.0.1:8000`.
+
+Create `/etc/systemd/system/assas-data-hub.service`:
+
+````ini
+# filepath: /etc/systemd/system/assas-data-hub.service
+[Unit]
+Description=ASSAS Data Hub (Gunicorn)
+After=network.target
+
+[Service]
+Type=simple
+User=www-data
+Group=www-data
+WorkingDirectory=/root/assas-data-hub-dev
+
+# Use your venv python/gunicorn paths
+Environment="PATH=/root/assas-data-hub-dev/.venv/bin"
+ExecStart=/root/assas-data-hub-dev/.venv/bin/gunicorn \
+  --bind 127.0.0.1:8000 \
+  --workers 3 \
+  --timeout 300 \
+  wsgi:app
+
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
+````
+
+## Upload of ASTEC Data
+
+Uploads are performed with the helper script `tools/assas_data_uploader.py`.
+
+### What the uploader actually does (LSDF + rsync)
+
+The uploader is designed to **transfer large ASTEC archives efficiently** by writing **directly to the LSDF** via **SSH + `rsync`**:
+
+- **Data path:** your machine → `rsync` over SSH → **LSDF storage**
+- **Control path:** the uploader also **registers/updates metadata** so the dataset appears in the ASSAS Data Hub UI and can be processed by server-side cron jobs.
+
+This approach avoids pushing large files through the web application and makes interrupted uploads resumable (rsync only transfers missing/changed parts).
+
+### Typical workflow
+
+1. Prepare your local ASTEC project directory and the archive file(s) you want to upload.
+2. Ensure you have:
+   - LSDF access (KIT/guest account)
+   - password-less SSH to the LSDF login node (see below)
+   - `rsync` installed locally
+3. Run the uploader (examples are in the **[Tools](#tools)** section).
+4. After upload, the dataset will show up in the Data Hub and will move through statuses like:
+   `UPLOADED → CONVERTING → VALID/INVALID` (handled by server-side cron jobs).
+
+### Notes / troubleshooting
+
+- If uploads are slow or fail mid-way, re-running the uploader typically resumes because `rsync` can continue partial transfers.
+- The uploader depends on a working SSH setup; test first:
+  ```console
+  $ ssh <USERNAME>@os-login.lsdf.kit.edu
+  ```
+- Make sure `rsync` is installed:
+  ```console
+  $ rsync --version
+  ```
+
+The upload of ASTEC data is supported through an upload application under ``tools/assas_data_uploader.py``.
+
+See the **[Tools](#tools)** section for the uploader (`tools/assas_data_uploader.py`) and detailed upload instructions.
 
 ### Required Access and Configuration
 
@@ -108,47 +308,37 @@ The use of the upload application requires the following:
    $ ssh <USERNAME>@os-login.lsdf.kit.edu
    ```
    This command should open the terminal to the LSDF without asking for a password.
-4. Installation of ``Python3.10+`` and ``rysnc`` on the local machine ([https://www.python.org/downloads/](https://www.python.org/downloads/) and [https://wiki.ubuntuusers.de/rsync/](https://wiki.ubuntuusers.de/rsync/))
+4. Installation of ``Python3.10+`` and ``rsync`` on the local machine ([https://www.python.org/downloads/](https://www.python.org/downloads/) and [https://wiki.ubuntuusers.de/rsync/](https://wiki.ubuntuusers.de/rsync/))
 5. Definition of the upload parameters of the ASTEC archive according to the commandline interface described in the next section
+6. Update schematic:
 
-### Command-line Interface
+<figure>
+  <a href="./flask_app/dash_app/assets/assas_data_upload.png">
+    <img
+      src="./flask_app/dash_app/assets/assas_data_upload.png"
+      alt="ASSAS Data Hub uploader tool (schematic)"
+      title="Click to open full size"
+      style="
+        display: block;
+        margin: 0 auto;
+        width: 100%;
+        max-width: 900px;
+        height: auto;
+        border: 1px solid #d0d7de;
+        border-radius: 10px;
+        box-shadow: 0 6px 18px rgba(27,31,36,0.12);
+      "
+      loading="lazy"
+    />
+  </a>
+  <figcaption align="center">
+    <em>Uploader tool (schematic): configure source, archives, and metadata before transfer.</em><br />
+  </figcaption>
+</figure>
 
-The command-line interface of the upload application requires the following parameter:
+7. See the **[Tools](#tools)** section for the uploader (`tools/assas_data_uploader.py`) and detailed upload instructions.
 
-* --user (-u): KIT internal batch which has access to the LSDF
-* --source (-s): Absolute path to the directory tree which has to be uploaded (ASTEC Project directory)
-* --name (-n): Corresponding name of the archive visible in the database
-* --description (-d): Corresponding description of the archive visible in the database
-* --archives (-a): Sub path to the actual ASTEC archive inside the directory tree, or a list of sub paths for multiple archives
-
-The commandline interface of the upload application has the following optional parameter:
-
-* --uuid (-i): Upload identifier of an upload process which was already started
-* --debug (-l): Enable debug logging of the application
-
-The parameter --uuid can be used to resume an interrupted or failed upload. One must determine the upload uuid from the standard output of the upload application or from the log file.
-
-### Examples
-
-The upload application can be executed via command-line as follows:
-
-```console
-$ python tools/assas_data_uploader.py -u my_user -s my_source_path -n my_name -d my_description -a my_archive_path
-```
-
-If there is a project tree with several ASTEC runs, one can define a list of archive paths:
-
-```console
-$ python tools/assas_data_uploader.py -u my_user -s my_source_path -n my_name -d my_description -a my_archive_path_1, my_archive_path_2, ....
-```
-
-<div align="center">
-    <img src="./flask_app/dash_app/assets/assas_data_upload.png" height="200px"></img>
-</div>
-
-The application produces a log file for each execution. The name of the logfile starts with the upload uuid.
-
-## Database view
+## Database View
 
 The database view displays a list with all available datasets and provides the following parameters:
 
@@ -175,8 +365,10 @@ A database entry can have the following states:
 
 ### General
 
-* Name (same as on the database view)
-* Description
+* ``Title``: Human-readable dataset title (RADAR metadata attribute ``meta_title``)
+* ``Technical Name``: Stable identifier / short name shown in the database view (metadata attribute ``meta_name``)
+* ``Description``: Free-text notes about the dataset (metadata attribute ``meta_description``)
+* ``Created At``: Timestamp when the dataset was uploaded/registered (server time)
 
 ### Data
 
@@ -195,22 +387,44 @@ This repository provides command-line helper scripts in `tools/` for uploading a
 
 Upload ASTEC project archives to the LSDF and register them in the ASSAS Data Hub database.
 
-**Typical workflow:**
+**Typical workflow**
+
 1. Collect an ASTEC project directory (source) and one or more archive paths.
 2. Run the uploader to transfer the data to LSDF and create the corresponding dataset entry.
 3. Monitor conversion status later in the **Database view** (e.g., `UPLOADED → CONVERTING → VALID/INVALID`).
 
-**Common CLI parameters (see `--help` for the full list):**
-- `--user` / `-u` — KIT/LSDF user (must have LSDF access)
-- `--source` / `-s` — absolute path to the ASTEC project directory to upload
-- `--name` / `-n` — dataset name as shown in the database
-- `--description` / `-d` — dataset description / notes
-- `--archive` / `-a` — one or more archive paths (comma-separated)
+**Common CLI parameters (see `--help` for the full list)**
 
-**Example:**
+- `--user` / `-u` — KIT/LSDF user (must have LSDF access)
+- `--source` / `-s` — Absolute path to the ASTEC project directory to upload
+- `--name` / `-n` — Dataset name as shown in the database
+- `--description` / `-d` — Dataset description / notes
+- `--archives` / `-a` — One or more archive paths (comma-separated)
+
+The commandline interface of the upload application has the following optional parameter:
+
+- `--uuid` / `-i` — Upload identifier of an upload process which was already started
+- `--debug` / `-l` — Enable debug logging of the application
+
+The parameter --uuid can be used to resume an interrupted or failed upload. One must determine the upload uuid from the standard output of the upload application or from the log file.
+
+**Examples:**
+
+For only one archive path (`/abs/path/a1`):
+
+```console
+$ python tools/assas_data_uploader.py -u my_user -s /abs/path/to/project -n "My dataset" -d "Short description" -a /abs/path/a1
+```
+
+It is also possible to upload severval archive paths (in a list `/abs/path/a1,/abs/path/a2,..`):
+
 ```console
 $ python tools/assas_data_uploader.py -u my_user -s /abs/path/to/project -n "My dataset" -d "Short description" -a /abs/path/a1,/abs/path/a2
 ```
+
+**Logging**
+
+The application produces a log file for each execution. The name of the logfile starts with the upload uuid.
 
 ### Downloader (`tools/assas_data_downloader.py`) — recommended for automated downloads
 
@@ -384,7 +598,7 @@ If a request fails, the API returns a JSON object with `success: false` and an `
 
 ---
 
-## Tools
+## Curator Tools
 
 ### Update dataset attributes (CLI)
 
@@ -474,5 +688,24 @@ Notes:
 - Updating metadata changes both the MongoDB entry and the underlying NetCDF4 file attributes (to keep them in sync).
 
 <div align="center">
-    <a href="http://www.kit.edu/english/index.php"><img src="./flask_app/dash_app/assets/kit_logo.drawio.svg" height="100px" hspace="3%" vspace="25px"></a>
+  <a href="http://www.kit.edu/english/index.php">
+    <img
+      src="./flask_app/dash_app/assets/kit_logo.drawio.svg"
+      alt="KIT"
+      height="110"
+      style="
+        display:block;
+        margin: 16px auto 8px;
+        padding: 12px 18px;
+        border: 1px solid #d0d7de;
+        border-radius: 12px;
+        background: #ffffff;
+        box-shadow: 0 6px 18px rgba(27,31,36,0.12);
+      "
+      loading="lazy"
+    />
+  </a>
+  <div style="font-size: 0.95em; color: #57606a;">
+    <em>Karlsruhe Institute of Technology (KIT)</em>
+  </div>
 </div>
