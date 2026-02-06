@@ -43,9 +43,33 @@
 
 # ASSAS Data Hub
 
-The ASSAS Data Hub is a web application to store and visualize ASTEC simulation data on the Large Scale Data Facility at KIT. Its database contains the ASTEC archive in binary raw format and offers a conversion in other data formats. At the moment only a conversion in hdf5 data format is supported.
+<!-- Add a visible badge row (place directly under the H1) -->
+[![Project](https://img.shields.io/badge/Website-assas--horizon--euratom.eu-1f6feb)](https://assas-horizon-euratom.eu)
+[![Web App](https://img.shields.io/badge/Live%20App-assas.scc.kit.edu-2da44e)](https://assas.scc.kit.edu/assas_app/home)
+[![API](https://img.shields.io/badge/API-%2Fassas__app%2F-dc8a00)](https://assas.scc.kit.edu/assas_app)
 
-- [Prequisites](#prequisites)
+<p align="center">
+  <strong>Start here:</strong>
+  <a href="https://assas-horizon-euratom.eu/">Project Website</a>
+  &nbsp;|&nbsp;
+  <a href="https://assas.scc.kit.edu/assas_app/home">ASSAS Data Hub</a>
+  &nbsp;|&nbsp;
+  <a href="https://assas.scc.kit.edu/assas_app/database">ASSAS Datasets</a>
+</p>
+
+<!-- Add a “Quick Links” block (place right after the badges) -->
+## Quick Links
+
+- **Project website:** https://assas-horizon-euratom.eu
+- **ASSAS Data Hub (Home):** https://assas.scc.kit.edu/assas_app/home
+- **Database view (datasets):** https://assas.scc.kit.edu/assas_app/database
+- **REST API base path:** https://assas.scc.kit.edu/assas_app
+- **Tools (CLI):** see [Tools](#tools) (`tools/assas_data_uploader.py`, `tools/assas_data_downloader.py`)
+
+## Content
+
+- [Quick Links](#quick-links)
+- [Prerequisites](#prerequisites)
 - [Installation](#installation)
 - [Upload of ASTEC Data](#upload-of-astec-data)
 - [Profile](#profile)
@@ -54,14 +78,14 @@ The ASSAS Data Hub is a web application to store and visualize ASTEC simulation 
 - [RESTful API](#restful-api)
 - [Curator Tools](#curator-tools)
 
-## Prequisites
+## Prerequisites
 
 The ASSAS Data Hub is a flask web application, which requires the following additional software packages:
 
-* [MongoDB Version 7.0.6](https://www.mongodb.com/docs/manual/release-notes/7.0/)
+* [MongoDB Version 7.0.6](https://www.mongodb.com/docs/manual/release-notes/7.0)
 * [Python3.11 virtual environment](https://docs.python.org/3/library/venv.html)
 * [ASTEC V3.1.1/V3.1.2 installation](https://gforge.irsn.fr/?lang=en#/project/astec/frs/7574/details)
-* [Cron 1.5.2](https://wiki.ubuntuusers.de/Cron/)
+* [Cron 1.5.2](https://wiki.ubuntuusers.de/Cron)
 
 ## Installation
 
@@ -340,7 +364,7 @@ The use of the upload application requires the following:
 
 ## Database View
 
-The database can be inspected under **Database page:** https://assas.scc.kit.edu/assas_app/database/.
+The database can be inspected under **Database page:** https://assas.scc.kit.edu/assas_app/database.
 
 The database view displays a list with all available datasets and provides the following parameters:
 
