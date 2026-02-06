@@ -191,6 +191,18 @@ def _extract_anchor_text(value: object) -> str:
     return (m.group(1) if m else s).strip()
 
 
+def _extract_anchor_href(value: object) -> str:
+    """Extract href from an HTML anchor.
+
+    Note: 
+        (<a href="...">text</a>) or return empty string."""
+    if value is None:
+        return ""
+    s = str(value)
+    m = re.search(r'href="([^"]+)"', s)
+    return (m.group(1) if m else "").strip()
+
+
 def _parse_size_to_bytes(value: object) -> int | None:
     """Parse sizes like '10 MB', '1.2 GB', '12345' into bytes.
 
@@ -2845,53 +2857,71 @@ def clean_data_for_export(df, export_options):
     """Clean data for export by removing HTML and preparing for CSV/Excel."""
     try:
         df_clean = df.copy()
+        export_options = export_options or []
+        include_links = "include_links" in export_options
 
         # Remove HTML from specific columns
         html_columns = ["meta_name", "system_status", "system_download"]
 
         for col in html_columns:
-            if col in df_clean.columns:
-                if col == "meta_name":
-                    # Extract text from links for dataset names
-                    df_clean[col] = (
-                        df_clean[col]
-                        .astype(str)
-                        .str.extract(r">([^<]+)<", expand=False)
-                        .fillna(df_clean[col])
-                    )
-                elif col == "system_status":
-                    # Extract status text from HTML spans
-                    df_clean[col] = (
-                        df_clean[col]
-                        .astype(str)
-                        .str.extract(r">([^<]+)<", expand=False)
-                        .fillna(df_clean[col])
-                    )
-                elif col == "system_download":
-                    if "include_links" not in export_options:
-                        # Replace download links with simple text
-                        df_clean[col] = df_clean[col].apply(
-                            lambda x: "hdf5 file available"
-                            if "hdf5 file" in str(x) and "no-download" not in str(x)
-                            else "no hdf5 file"
-                        )
+            if col not in df_clean.columns:
+                continue
+
+            if col == "meta_name":
+                # Always export the readable dataset name (not the <a> markup)
+                df_clean[col] = df_clean[col].apply(_extract_anchor_text)
+
+                # If requested, also export the full details URL as plain text
+                if include_links:
+                     # placeholder to preserve column order intent
+                    df_clean["meta_name_url"] = df_clean["meta_name"].copy()
+                    # Use original (pre-stripped) values to extract href reliably
+                    df_clean["meta_name_url"] = df[col].apply(_extract_anchor_href)
+
+            elif col == "system_status":
+                # Export plain status text
+                df_clean[col] = df_clean[col].apply(_extract_anchor_text)
+
+            elif col == "system_download":
+                # Always export a readable status text
+                def _download_text(x: object) -> str:
+                    s = str(x)
+                    if "no-download" in s:
+                        return "no hdf5 file"
+                    if "hdf5 file" in s:
+                        return "hdf5 file available"
+                    return s
+
+                df_clean[col] = df_clean[col].apply(_download_text)
+
+                # If requested, also export the full download URL as plain text
+                if include_links:
+                    # Extract href only when a link exists; otherwise empty
+                    def _download_href(x: object) -> str:
+                        s = str(x)
+                        if "no-download" in s:
+                            return ""
+                        return _extract_anchor_href(x)
+
+                    df_clean["system_download_url"] = df[col].apply(_download_href)
 
         # Clean column names for better readability
         column_mapping = {
             "system_index": "Index",
             "meta_name": "Dataset Name",
+            "meta_name_url": "Dataset Details URL",
             "system_status": "Status",
             "system_date": "Upload Date",
             "system_user": "User",
             "system_size": "Binary Size",
             "system_size_hdf5": "HDF5 Size",
             "system_download": "Download Status",
+            "system_download_url": "HDF5 Download URL",
             "system_uuid": "UUID",
             "description": "Description",
             "meta_description": "Meta Description",
         }
 
-        # Rename columns that exist in the dataframe
         existing_columns = {
             k: v for k, v in column_mapping.items() if k in df_clean.columns
         }

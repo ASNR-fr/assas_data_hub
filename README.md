@@ -1,7 +1,18 @@
 <div align="center">
-  <a href="https://assas-horizon-euratom.eu/">
-    <img src="./flask_app/dash_app/assets/assas_logo.svg" height="100px">
-  </a>
+  <table>
+    <tr>
+      <td align="center" valign="middle" style="padding-right: 16px;">
+        <a href="https://assas-horizon-euratom.eu/">
+          <img src="./flask_app/dash_app/assets/assas_logo_mod.svg" height="100px">
+        </a>
+      </td>
+      <td align="center" valign="middle" style="padding-left: 16px;">
+        <a href="http://www.kit.edu/english/index.php">
+          <img src="./flask_app/dash_app/assets/assas_logo.svg" height="100px">
+        </a>
+      </td>
+    </tr>
+  </table>
 </div>
 
 ----
