@@ -43,10 +43,9 @@
 
 # ASSAS Data Hub
 
-<!-- Add a visible badge row (place directly under the H1) -->
-[![Project](https://img.shields.io/badge/Website-assas--horizon--euratom.eu-1f6feb)](https://assas-horizon-euratom.eu)
-[![Web App](https://img.shields.io/badge/Live%20App-assas.scc.kit.edu-2da44e)](https://assas.scc.kit.edu/assas_app/home)
-[![API](https://img.shields.io/badge/API-%2Fassas__app%2F-dc8a00)](https://assas.scc.kit.edu/assas_app)
+[![Project](https://img.shields.io/badge/Project-assas--horizon--euratom.eu-0969da?style=for-the-badge&logo=googlechrome&logoColor=white&v=20260206a)](https://assas-horizon-euratom.eu/)
+[![Web App](https://img.shields.io/badge/Web%20App-assas.scc.kit.edu-2da44e?style=for-the-badge&logo=vercel&logoColor=white&v=20260206a)](https://assas.scc.kit.edu/assas_app/home)
+[![REST API](https://img.shields.io/badge/REST%20API-%2Fassas__app%2Fdatasets-dc8a00?style=for-the-badge&logo=swagger&logoColor=white&v=20260206a)](https://assas.scc.kit.edu/assas_app/datasets)
 
 <p align="center">
   <strong>Start here:</strong>
@@ -64,6 +63,7 @@
 - **ASSAS Data Hub (Home):** https://assas.scc.kit.edu/assas_app/home
 - **Database view (datasets):** https://assas.scc.kit.edu/assas_app/database
 - **REST API base path:** https://assas.scc.kit.edu/assas_app
+- **REST API datasets:** https://assas.scc.kit.edu/assas_app/datasets
 - **Tools (CLI):** see [Tools](#tools) (`tools/assas_data_uploader.py`, `tools/assas_data_downloader.py`)
 
 ## Content
