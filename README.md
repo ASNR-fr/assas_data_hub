@@ -540,8 +540,9 @@ The ASSAS Data Hub provides a RESTful API to query training data in an automated
 All endpoints are available under the `/assas_app/` path. All endpoints return JSON.
 
 **Base URLs (clickable):**
-- **Home Page:** https://assas.scc.kit.edu/assas_app/home/
-- **API base path:** https://assas.scc.kit.edu/assas_app/
+- **Home Page:** https://assas.scc.kit.edu/assas_app/home
+- **API Base Bath:** https://assas.scc.kit.edu/assas_app
+- **API Datasets:** https://assas.scc.kit.edu/assas_app/datasets
 
 #### Authentication
 
