@@ -181,9 +181,47 @@ The ASSAS Data Hub provides a RESTful API to query training data in an automated
 
 All endpoints are available under the `/assas_app/` path. All endpoints return JSON.
 
+**Base URLs (clickable):**
+- **Home Page:** https://assas.scc.kit.edu/assas_app/home/
+- **API base path:** https://assas.scc.kit.edu/assas_app/
+
 #### Authentication
 
 Some endpoints require authentication. Use your username and password to obtain a session or token as described in the login section of the web interface.
+
+> **Note (browser / clickable links):** You can also open the endpoints directly in your browser. The links shown below are provided as clickable hyperlinks for convenience.  
+
+> **Note (authentication):** Some endpoints require authentication. “Bare” `curl` examples (without cookies/headers) may fail with `401/403`. If a bare request appears to work in an interactive shell, credentials may already be present in that environment. For automated downloads, prefer the downloader script (it logs in and reuses the authenticated session).
+
+#### Downloader script (recommended)
+
+For automated downloads (e.g., in pipelines/CI), use the downloader script instead of manually calling the API with `curl`.
+
+- **Script:** `tools/assas_data_downloader.py`
+- **What it does:**
+  1. Prompts for **API base URL** (default: `https://assas.scc.kit.edu`)
+  2. Prompts for **username** and **password** (hidden input)
+  3. Authenticates via `POST /auth/basic/login` (session cookies)
+  4. Lists datasets via `GET /assas_app/datasets?status=Valid`
+  5. Downloads each dataset via `GET /assas_app/files/download/<uuid>` into `./downloads/`
+  6. Writes a manifest so repeated runs can skip already-downloaded files
+- **Outputs:**
+  - Downloads are stored in: `downloads/`
+  - Manifest file (default): `downloads/manifest.json`
+  - Log file: `assas_data_downloader.log` (also prints to stdout)
+
+**CLI options:**
+- `--loglevel` (default: `INFO`) — `DEBUG|INFO|WARNING|ERROR|CRITICAL`
+- `--max-downloads` (default: `0`) — max datasets to download in this run (`0` = no limit)
+- `--skip-existing` — skip datasets already present in the manifest or as an existing file
+- `--manifest` (default: `downloads/manifest.json`) — path to the manifest file
+- `--limit` (default: `1000`) — max number of datasets requested from the API
+- `--offset` (default: `0`) — offset for paging through the dataset list
+
+Show help:
+```console
+$ python tools/assas_data_downloader.py --help
+```
 
 #### Endpoints
 
@@ -193,13 +231,17 @@ Some endpoints require authentication. Use your username and password to obtain 
 GET /assas_app/datasets
 ```
 
+**Browser (clickable):**
+- https://assas.scc.kit.edu/assas_app/datasets
+- https://assas.scc.kit.edu/assas_app/datasets?status=valid
+
 **Query parameters:**
 - `status` (optional): Filter datasets by status (e.g., `valid`)
 - `limit` (optional): Limit the number of results
 
 **Example:**
 ```bash
-curl https://assas.scc.kit.edu/assas_app/datasets?status=valid
+curl "https://assas.scc.kit.edu/assas_app/datasets?status=valid"
 ```
 
 ##### Get dataset metadata
