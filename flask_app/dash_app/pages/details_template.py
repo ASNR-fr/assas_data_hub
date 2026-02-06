@@ -190,7 +190,25 @@ def meta_general_info_table(document: dict) -> dbc.Table:
                 ),
                 html.Tr(
                     [
-                        html.Td("Technical Name", style={"width": "30%"}),
+                        html.Td(
+                            [
+                                "Technical Name",
+                                html.I(
+                                    className="fas fa-circle-info ms-2",
+                                    id="tt-tech-name-general-target",
+                                    style={"color": "#6c757d"},
+                                ),
+                                dbc.Tooltip(
+                                    children="Technical Name is the same as the “Name” shown in the main database view.",  # noqa: E501
+                                    target="tt-tech-name-general-target",
+                                    placement="top",
+                                    trigger="hover focus",
+                                    autohide=False,
+                                    delay={"show": 200, "hide": 400},
+                                ),
+                            ],
+                            style={"width": "30%"},
+                        ),
                         html.Td(
                             document.get("meta_name", ""),
                             style={
@@ -804,7 +822,20 @@ def layout(report_id: str | None = None) -> html.Div:
                             },
                         ),
                         html.P(
-                            f"Technical Name: {document.get('meta_name', '')}",
+                            [
+                                f"Technical Name: {document.get('meta_name', '')}",
+                                html.I(
+                                    className="fas fa-circle-info ms-2",
+                                    id="tt-tech-name-header-target",
+                                    style={"color": "#6c757d"},
+                                ),
+                                dbc.Tooltip(
+                                    children="Technical Name is the same as the “Name” shown in the main database view.",  # noqa: E501
+                                    target="tt-tech-name-header-target",
+                                    placement="top",
+                                    trigger="hover focus",
+                                ),
+                            ],
                             id="dataset-meta-name",
                             style={
                                 "fontSize": "1.1rem",
@@ -1417,7 +1448,20 @@ def save_metadata(
                 dbc.Alert("Metadata updated successfully!", color="success"),
                 dash.no_update,
                 f"Titel: {title_str}",
-                f"Technical Name: {name_str}",
+                [
+                    f"Technical Name: {name_str}",
+                    html.I(
+                        className="fas fa-circle-info ms-2",
+                        id="tt-tech-name-header-target",
+                        style={"color": "#6c757d"},
+                    ),
+                    dbc.Tooltip(
+                        children="Technical Name is the same as the “Name” shown in the main database view.",  # noqa: E501
+                        target="tt-tech-name-header-target",
+                        placement="top",
+                        trigger="hover focus",
+                    ),
+                ],
                 meta_general_info_table(updated_document),
                 updated_document,
             )

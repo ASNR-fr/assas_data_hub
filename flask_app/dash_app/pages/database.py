@@ -1871,7 +1871,7 @@ def layout() -> html.Div:
                                                                         "hideable": False,
                                                                     },
                                                                     {
-                                                                        "name": "Dataset Name",
+                                                                        "name": "Name",
                                                                         "id": "meta_name",
                                                                         "selectable": True,
                                                                         "presentation": "markdown",
