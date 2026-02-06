@@ -1,5 +1,7 @@
 <div align="center">
-    <a href="https://assas-horizon-euratom.eu/"><img src="./flask_app/dash_app/assets/ASSAS logo.svg" height="100px" hspace="3%" vspace="25px"></a>
+  <a href="https://assas-horizon-euratom.eu/">
+    <img src="./flask_app/dash_app/assets/assas_logo.svg" height="100px">
+  </a>
 </div>
 
 ----
