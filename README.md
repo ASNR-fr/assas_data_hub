@@ -91,15 +91,33 @@ The ASSAS Data Hub is a flask web application, which requires the following addi
 
 ### Start application
 
-Entrypoint of the application is wsgi.py (Python Web Server Gateway Interface) and can be started with:
+The application entrypoint is **`wsgi.py`** (WSGI = *Web Server Gateway Interface*).  
+For local development you can start the Flask app directly via Python:
 
 ```console
+# (optional) activate your venv first
+# $ python3.11 -m venv .venv
+# $ source .venv/bin/activate
+# $ python -m pip install -U pip
+# $ python -m pip install -r requirements.txt   # if a requirements file is provided
+
 $ python wsgi.py
 ```
 
-The application starts as a custom flask app. Available under 
-[https://assas.scc.kit.edu/assas_app/home](https://assas.scc.kit.edu/assas_app/home)
-on a virtual machine inside as the ASSAS Server inside the KIT infrastructure.
+**What to expect**
+- The process will start the web server and print the **host/port** it is listening on.
+- The web UI “Home” page is typically under the app prefix:
+
+  `/assas_app/home`
+
+So if you run it locally, open the URL that the server prints and append `/assas_app/home` if needed.
+
+**Production instance (KIT infrastructure)**
+- The publicly available deployment is reachable at:  
+  https://assas.scc.kit.edu/assas_app/home
+
+> In production, the app is typically run behind a reverse proxy (e.g. **nginx**) using a WSGI server
+> such as **Gunicorn** (see the “Reverse-proxy configuration” section below).
 
 ### NoSQL Database
 
@@ -364,7 +382,7 @@ The use of the upload application requires the following:
 
 ## Database View
 
-The database can be inspected under **Database page:** https://assas.scc.kit.edu/assas_app/database.
+The database can be inspected under **Database View:** https://assas.scc.kit.edu/assas_app/database.
 
 The database view displays a list with all available datasets and provides the following parameters:
 
