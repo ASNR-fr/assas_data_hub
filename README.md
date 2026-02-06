@@ -12,6 +12,7 @@ The ASSAS Data Hub is a web application to store and visualize ASTEC simulation 
 - [Installation](#installation)
 - [Upload ASTEC Data](#upload-astec-data)
 - [Database View](#database-view)
+- [Tools](#tools)
 - [RESTful API](#restful-api)
 
 ## Prerequisites
@@ -172,6 +173,69 @@ The following meta information is extracted during the upload and conversion pro
 * Channels: Number of ectracted channels
 * Meshes: Number of extracted meshes
 * Samples: Number of extracted samples
+
+## Tools
+
+This repository provides command-line helper scripts in `tools/` for uploading and downloading datasets.
+
+### Uploader (`tools/assas_data_uploader.py`)
+
+Upload ASTEC project archives to the LSDF and register them in the ASSAS Data Hub database.
+
+**Typical workflow:**
+1. Collect an ASTEC project directory (source) and one or more archive paths.
+2. Run the uploader to transfer the data to LSDF and create the corresponding dataset entry.
+3. Monitor conversion status later in the **Database view** (e.g., `UPLOADED → CONVERTING → VALID/INVALID`).
+
+**Common CLI parameters (see `--help` for the full list):**
+- `--user` / `-u` — KIT/LSDF user (must have LSDF access)
+- `--source` / `-s` — absolute path to the ASTEC project directory to upload
+- `--name` / `-n` — dataset name as shown in the database
+- `--description` / `-d` — dataset description / notes
+- `--archive` / `-a` — one or more archive paths (comma-separated)
+
+**Example:**
+```console
+$ python tools/assas_data_uploader.py -u my_user -s /abs/path/to/project -n "My dataset" -d "Short description" -a /abs/path/a1,/abs/path/a2
+```
+
+### Downloader (`tools/assas_data_downloader.py`) — recommended for automated downloads
+
+Authenticate against the REST API and download datasets to `./downloads/`. A manifest is written so repeated runs can resume/skip already downloaded datasets.
+
+**What it does:**
+- Prompts for **API base URL**, **username**, and **password**
+- Authenticates (session-based), lists datasets (typically `status=Valid`), then downloads files
+- Writes:
+  - downloads into `downloads/`
+  - manifest into `downloads/manifest.json`
+  - log file `assas_data_downloader.log`
+
+**CLI options:**
+- `--loglevel` — `DEBUG|INFO|WARNING|ERROR|CRITICAL` (default: `INFO`)
+- `--max-downloads` — max datasets to download in this run (`0` = no limit)
+- `--skip-existing` — skip datasets already present in the manifest or as an existing file
+- `--manifest` — path to manifest file (default: `downloads/manifest.json`)
+- `--limit` — max number of datasets requested from the API (default: `1000`)
+- `--offset` — paging offset when listing datasets (default: `0`)
+
+**Examples:**
+```console
+# Download everything (interactive prompts for URL/user/password)
+$ python tools/assas_data_downloader.py
+
+# Skip already downloaded items and only fetch the next 10
+$ python tools/assas_data_downloader.py --skip-existing --max-downloads 10
+
+# Debug logging and paging through the list
+$ python tools/assas_data_downloader.py --loglevel DEBUG --limit 200 --offset 200
+```
+
+Show all available options:
+```console
+$ python tools/assas_data_uploader.py --help
+$ python tools/assas_data_downloader.py --help
+```
 
 ## RESTful API
 
