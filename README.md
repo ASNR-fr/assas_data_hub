@@ -33,7 +33,9 @@ Entrypoint of the application is wsgi.py (Python Web Server Gateway Interface) a
 $ python wsgi.py
 ```
 
-The application starts as a custom flask app. Test version available under [http://assas.scc.kit.edu:5000/assas_app/home](http://assas.scc.kit.edu:5000/assas_app/home) on a virtual machine inside the KIT infrastructure.
+The application starts as a custom flask app. Available under:
+[http://assas.scc.kit.edu:5000/assas_app/home](http://assas.scc.kit.edu:5000/assas_app/home)
+on a virtual machine inside the KIT infrastructure.
 
 ### NoSQL Database
 
@@ -177,7 +179,7 @@ The ASSAS Data Hub provides a RESTful API to query training data in an automated
 
 ### v1 RESTful API Documentation
 
-The test version fo the v1 API is available under the `/test/assas_app/` path. All endpoints return JSON.
+All endpoints are available under the `/assas_app/` path. All endpoints return JSON.
 
 #### Authentication
 
@@ -188,7 +190,7 @@ Some endpoints require authentication. Use your username and password to obtain 
 ##### List all datasets
 
 ```
-GET /test/assas_app/datasets
+GET /assas_app/datasets
 ```
 
 **Query parameters:**
@@ -197,24 +199,24 @@ GET /test/assas_app/datasets
 
 **Example:**
 ```bash
-curl https://assas.scc.kit.edu/test/assas_app/datasets?status=valid
+curl https://assas.scc.kit.edu/assas_app/datasets?status=valid
 ```
 
 ##### Get dataset metadata
 
 ```
-GET /test/assas_app/datasets/<uuid>
+GET /assas_app/datasets/<uuid>
 ```
 
 **Example:**
 ```bash
-curl https://assas.scc.kit.edu/test/assas_app/datasets/123e4567-e89b-12d3-a456-426614174000
+curl https://assas.scc.kit.edu/assas_app/datasets/d0dd92a3-504a-4623-b2c1-4b42cad516a9
 ```
 
 ##### Get variable data from a dataset
 
 ```
-GET /test/assas_app/datasets/<uuid>/data/<variable_name>
+GET /assas_app/datasets/<uuid>/data/<variable_name>
 ```
 
 **Query parameters:**
@@ -222,18 +224,18 @@ GET /test/assas_app/datasets/<uuid>/data/<variable_name>
 
 **Example:**
 ```bash
-curl "https://assas.scc.kit.edu/test/assas_app/datasets/123e4567-e89b-12d3-a456-426614174000/data/vessel_rupture?include_stats=true"
+curl "https://assas.scc.kit.edu/assas_app/datasets/d0dd92a3-504a-4623-b2c1-4b42cad516a9/data/vessel_rupture?include_stats=true"
 ```
 
 ##### Download dataset archive
 
 ```
-GET /test/assas_app/files/archive/<uuid>
+GET /assas_app/files/archive/<uuid>
 ```
 
 **Example:**
 ```bash
-curl -O https://assas.scc.kit.edu/test/assas_app/files/archive/123e4567-e89b-12d3-a456-426614174000
+curl -O https://assas.scc.kit.edu/assas_app/files/archive/d0dd92a3-504a-4623-b2c1-4b42cad516a9
 ```
 
 #### Response Format
@@ -249,7 +251,7 @@ All API responses are JSON objects with at least the following fields:
 {
   "success": true,
   "data": {
-    "uuid": "123e4567-e89b-12d3-a456-426614174000",
+    "uuid": "d0dd92a3-504a-4623-b2c1-4b42cad516a9",
     "name": "Test Dataset",
     "status": "valid",
     "variables": ["vessel_rupture", "pressure", "temperature"]
@@ -281,11 +283,11 @@ cd /root/assas-data-hub-dev
 # Optional: configure via environment variables
 export ASSAS_USERNAME="your_user"
 export ASSAS_PASSWORD="your_password"
-export ASSAS_BASE_PATH="/test/assas_app"   # deployment prefix (example)
+export ASSAS_BASE_PATH="/assas_app"   # deployment prefix
 
 python tools/assas_update_dataset_attributes.py \
   --base-url "https://assas.scc.kit.edu" \
-  --dataset-id "123e4567-e89b-12d3-a456-426614174000" \
+  --dataset-id "d0dd92a3-504a-4623-b2c1-4b42cad516a9" \
   --title "New title" \
   --name "new_technical_name" \
   --description "New description"
@@ -296,7 +298,7 @@ If your environment uses a self-signed certificate, you can disable SSL verifica
 ```bash
 python tools/assas_update_dataset_attributes.py \
   --base-url "https://assas.scc.kit.edu" \
-  --dataset-id "123e4567-e89b-12d3-a456-426614174000" \
+  --dataset-id "d0dd92a3-504a-4623-b2c1-4b42cad516a9" \
   --title "New title" \
   --name "new_technical_name" \
   --description "New description" \
