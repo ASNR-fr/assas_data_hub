@@ -378,7 +378,7 @@ The following meta information is extracted during the upload and conversion pro
 
 Some parts of the ASSAS Data Hub may require authentication (login).
 
-* **Database page:** https://assas.scc.kit.edu/assas_app/database/
+* **Database page:** https://assas.scc.kit.edu/assas_app/database
 * **Login (Basic auth endpoint used by tools):** https://assas.scc.kit.edu/auth/basic/login. If your deployment provides a GUI login page, use that URL instead.
 * **Contact:** Visit our https://assas.scc.kit.edu/assas_app/home for more information.
 * **Email:** Email contact if access is needed contact [jonas.dresssner@kit.edu](mailto:jonas.dresssner@kit.edu).
