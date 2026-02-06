@@ -78,7 +78,6 @@ _TABLE_PROJECTION_EXCLUDE = {
     "system_user_info": 0,
     "upload_info": 0,
     "system_imported_from": 0,
-    # "meta_description": 0,
 }
 
 # DataFrame columns that should be forced into a DataTable-friendly representation
@@ -2005,17 +2004,6 @@ def layout() -> html.Div:
                                                                         "sortable": True,
                                                                     },
                                                                     {
-                                                                        "name": "Description",
-                                                                        "id": "description",
-                                                                        "selectable": True,
-                                                                        "type": "text",
-                                                                        "deletable": False,
-                                                                        "renamable": False,
-                                                                        "hideable": True,
-                                                                        "hidden": True,
-                                                                        "sortable": False,
-                                                                    },
-                                                                    {
                                                                         "name": "Meta Description",
                                                                         "id": "meta_description",
                                                                         "selectable": True,
@@ -2038,7 +2026,6 @@ def layout() -> html.Div:
                                                                     "system_result",
                                                                     "system_number_of_samples",
                                                                     "system_number_of_samples_completed",
-                                                                    "description",
                                                                     "meta_description",
                                                                 ],
                                                                 sort_action="custom",
@@ -2189,16 +2176,14 @@ def layout() -> html.Div:
                                                                         "rule": "min-width: 800px !important;",
                                                                     },
                                                                     {
-                                                                        "selector": 'th[data-dash-column="description"] .column-header--sort,'
-                                                                                    'th[data-dash-column="meta_description"] .column-header--sort,'
+                                                                        "selector": 'th[data-dash-column="meta_description"] .column-header--sort,'
                                                                                     'th[data-dash-column="system_download"] .column-header--sort,'
                                                                                     'th[data-dash-column="system_path"] .column-header--sort,'
                                                                                     'th[data-dash-column="system_result"] .column-header--sort',
                                                                         "rule": "display: none !important;",
                                                                     },
                                                                     {
-                                                                        "selector": 'th[data-dash-column="description"],'
-                                                                                    'th[data-dash-column="meta_description"],'
+                                                                        "selector": 'th[data-dash-column="meta_description"],'
                                                                                     'th[data-dash-column="system_download"],'
                                                                                     'th[data-dash-column="system_path"],'
                                                                                     'th[data-dash-column="system_result"]',
@@ -2918,7 +2903,6 @@ def clean_data_for_export(df, export_options):
             "system_download": "Download Status",
             "system_download_url": "HDF5 Download URL",
             "system_uuid": "UUID",
-            "description": "Description",
             "meta_description": "Meta Description",
         }
 
