@@ -537,12 +537,15 @@ The ASSAS Data Hub provides a RESTful API to query training data in an automated
 
 ### v1 RESTful API Documentation
 
-All endpoints are available under the `/assas_app/` path. All endpoints return JSON.
+All endpoints are served under the **app prefix**: `/assas_app` and return **JSON** (unless downloading a file).
 
 **Base URLs (clickable):**
 - **Home Page:** https://assas.scc.kit.edu/assas_app/home
 - **API Base Bath:** https://assas.scc.kit.edu/assas_app
 - **API Datasets:** https://assas.scc.kit.edu/assas_app/datasets
+
+> **Authentication note:** Some endpoints require an authenticated **session cookie**.
+> For automated downloads, prefer `tools/assas_data_downloader.py` (it performs login and reuses the session).
 
 #### Authentication
 
@@ -584,17 +587,27 @@ $ python tools/assas_data_downloader.py --help
 
 #### Endpoints
 
-##### List all datasets
+##### Authentication
 
-```
-GET /assas_app/datasets
-```
+| Purpose | Method | Endpoint |
+|---|---:|---|
+| Create session (Basic auth login) | `POST` | `/auth/basic/login` |
+
+##### Endpoint Summary
+
+| What | Method | Endpoint | Query params (common) |
+|---|---:|---|---|
+| List datasets | `GET` | `/assas_app/datasets` | `status`, `limit`, `offset` |
+| Get dataset metadata | `GET` | `/assas_app/datasets/<uuid>` | — |
+| Get variable data (by name) | `GET` | `/assas_app/datasets/<uuid>/data/<variable_name>` | `include_stats=true|false` |
+| Download dataset archive | `GET` | `/assas_app/files/archive/<uuid>` | — |
+| Download dataset (processed file) | `GET` | `/assas_app/files/download/<uuid>` | — |
 
 **Browser (clickable):**
 - https://assas.scc.kit.edu/assas_app/datasets
 - https://assas.scc.kit.edu/assas_app/datasets?status=valid
 
-**Query parameters:**
+**Query Parameters:**
 - `status` (optional): Filter datasets by status (e.g., `valid`)
 - `limit` (optional): Limit the number of results
 
@@ -603,50 +616,37 @@ GET /assas_app/datasets
 curl "https://assas.scc.kit.edu/assas_app/datasets?status=valid"
 ```
 
-##### Get dataset metadata
+**Get Dataset Metadata**
 
 ```
 GET /assas_app/datasets/<uuid>
 ```
 
-**Example:**
+##### Minimal `curl` examples
+
+**List Valid Datasets**
 ```bash
-curl https://assas.scc.kit.edu/assas_app/datasets/d0dd92a3-504a-4623-b2c1-4b42cad516a9
+curl "https://assas.scc.kit.edu/assas_app/datasets?status=valid"
 ```
 
-##### Get variable data from a dataset
-
-```
-GET /assas_app/datasets/<uuid>/data/<variable_name>
-```
-
-**Query parameters:**
-- `include_stats` (optional): If `true`, include statistics about the variable
-
-**Example:**
+**Get Dataset Metadata**
 ```bash
-curl "https://assas.scc.kit.edu/assas_app/datasets/d0dd92a3-504a-4623-b2c1-4b42cad516a9/data/vessel_rupture?include_stats=true"
+curl "https://assas.scc.kit.edu/assas_app/datasets/<uuid>"
 ```
 
-##### Download dataset archive
-
-```
-GET /assas_app/files/archive/<uuid>
-```
-
-**Example:**
+**Download Archive**
 ```bash
-curl -O https://assas.scc.kit.edu/assas_app/files/archive/d0dd92a3-504a-4623-b2c1-4b42cad516a9
+curl -L -O "https://assas.scc.kit.edu/assas_app/files/archive/<uuid>"
 ```
 
-#### Response Format
+**Response Format**
 
 All API responses are JSON objects with at least the following fields:
 - `success`: `true` or `false`
 - `data`: The requested data (if successful)
 - `message` or `error`: Error message (if not successful)
 
-#### Example Response
+**Example Response**
 
 ```json
 {
@@ -660,7 +660,7 @@ All API responses are JSON objects with at least the following fields:
 }
 ```
 
-#### Error Handling
+**Error Handling**
 
 If a request fails, the API returns a JSON object with `success: false` and an `error` or `message` field describing the problem.
 
