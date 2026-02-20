@@ -43,7 +43,7 @@ class AssasDataUploader:
         description: str,
         source_path: str,
         astec_archive_paths: List[str],
-        target_path: str = "/lsdf/kit/scc/projects/ASSAS/upload_test",
+        target_path: str = "/lsdf/kit/scc/projects/ASSAS/upload_datahub",
     ) -> None:
 
         self.folder_command = [
